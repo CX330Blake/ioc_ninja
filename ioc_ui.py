@@ -4,7 +4,7 @@ import time
 import csv
 import re
 
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QColor, QPalette, QPainter, QPen
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -27,8 +27,9 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QTreeWidgetItem,
     QStyle,
+    QProxyStyle,
 )
-from PySide6.QtCore import Qt, QObject, QThread, Signal
+from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent
 
 from . import ioc_logic
 from .tld_data import VALID_TLDS
@@ -38,6 +39,55 @@ import platform
 import socket
 import shutil
 import hashlib
+
+
+class IoCCheckboxProxyStyle(QProxyStyle):
+    """Custom checkbox style that draws border with CommentColor and check mark with Text color.
+    Colors are read from widget properties 'ioc_border_qcolor' and 'ioc_tick_qcolor' (QColor),
+    with fallbacks to the widget palette.
+    """
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element == QStyle.PE_IndicatorCheckBox and widget is not None:
+            try:
+                rect = option.rect
+                # Resolve colors
+                border = widget.property("ioc_border_qcolor")
+                if not isinstance(border, QColor):
+                    border = widget.palette().mid().color()
+                tick = widget.property("ioc_tick_qcolor")
+                if not isinstance(tick, QColor):
+                    tick = widget.palette().windowText().color()
+
+                # Draw border box (square corners)
+                painter.save()
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setPen(QPen(border, 1))
+                painter.setBrush(Qt.NoBrush)
+                r = rect.adjusted(1, 1, -1, -1)
+                painter.drawRect(r)
+
+                # Draw check mark if checked or partially checked
+                if (
+                    option.state & QStyle.State_On
+                    or option.state & QStyle.State_NoChange
+                ):
+                    painter.setPen(QPen(tick, 2))
+                    # Simple check mark geometry
+                    x1 = r.left() + int(r.width() * 0.18)
+                    y1 = r.top() + int(r.height() * 0.55)
+                    x2 = r.left() + int(r.width() * 0.44)
+                    y2 = r.top() + int(r.height() * 0.80)
+                    x3 = r.left() + int(r.width() * 0.82)
+                    y3 = r.top() + int(r.height() * 0.28)
+                    painter.drawLine(x1, y1, x2, y2)
+                    painter.drawLine(x2, y2, x3, y3)
+                painter.restore()
+                return
+            except Exception:
+                pass
+        # Fallback to default rendering
+        return super().drawPrimitive(element, option, painter, widget)
 
 
 class IoCScanWorker(QObject):
@@ -68,44 +118,68 @@ class IoCScanWorker(QObject):
             # Aggregate findings by (Type, Value) -> set(addresses)
             agg = {}
             # If user checked hash types, query Binary Ninja's file-hash API first.
-            if self.patterns and any(t in self.patterns for t in ("MD5", "SHA1", "SHA256")):
+            if self.patterns and any(
+                t in self.patterns for t in ("MD5", "SHA1", "SHA256")
+            ):
                 try:
-                    f = getattr(self.bv, 'file', None)
+                    f = getattr(self.bv, "file", None)
                     if f is not None:
                         if "MD5" in self.patterns:
-                            md5 = getattr(f, 'md5', None)
+                            md5 = getattr(f, "md5", None)
                             if md5:
                                 agg.setdefault(("MD5", md5), set()).add("N/A")
                         if "SHA1" in self.patterns:
-                            sha1 = getattr(f, 'sha1', None)
+                            sha1 = getattr(f, "sha1", None)
                             if sha1:
                                 agg.setdefault(("SHA1", sha1), set()).add("N/A")
                         if "SHA256" in self.patterns:
-                            sha256 = getattr(f, 'sha256', None)
+                            sha256 = getattr(f, "sha256", None)
                             if sha256:
                                 agg.setdefault(("SHA256", sha256), set()).add("N/A")
                 except Exception:
                     pass
                 # If API did not yield hashes, fall back to hashing bytes once
                 if ("MD5",) or ("SHA1",) or ("SHA256",):
-                    need_md5 = ("MD5" in self.patterns) and not any(k[0]=="MD5" for k in agg.keys())
-                    need_sha1 = ("SHA1" in self.patterns) and not any(k[0]=="SHA1" for k in agg.keys())
-                    need_sha256 = ("SHA256" in self.patterns) and not any(k[0]=="SHA256" for k in agg.keys())
+                    need_md5 = ("MD5" in self.patterns) and not any(
+                        k[0] == "MD5" for k in agg.keys()
+                    )
+                    need_sha1 = ("SHA1" in self.patterns) and not any(
+                        k[0] == "SHA1" for k in agg.keys()
+                    )
+                    need_sha256 = ("SHA256" in self.patterns) and not any(
+                        k[0] == "SHA256" for k in agg.keys()
+                    )
                     if need_md5 or need_sha1 or need_sha256:
                         try:
                             data = b""
                             length = getattr(self.bv, "end", None)
                             if length:
                                 data = self.bv.read(0, int(length)) or b""
-                            if not data and hasattr(self.bv, 'parent_view') and hasattr(self.bv.parent_view, 'end'):
-                                data = self.bv.parent_view.read(0, int(self.bv.parent_view.end)) or b""
+                            if (
+                                not data
+                                and hasattr(self.bv, "parent_view")
+                                and hasattr(self.bv.parent_view, "end")
+                            ):
+                                data = (
+                                    self.bv.parent_view.read(
+                                        0, int(self.bv.parent_view.end)
+                                    )
+                                    or b""
+                                )
                             if data:
                                 if need_md5:
-                                    agg.setdefault(("MD5", hashlib.md5(data).hexdigest()), set()).add("N/A")
+                                    agg.setdefault(
+                                        ("MD5", hashlib.md5(data).hexdigest()), set()
+                                    ).add("N/A")
                                 if need_sha1:
-                                    agg.setdefault(("SHA1", hashlib.sha1(data).hexdigest()), set()).add("N/A")
+                                    agg.setdefault(
+                                        ("SHA1", hashlib.sha1(data).hexdigest()), set()
+                                    ).add("N/A")
                                 if need_sha256:
-                                    agg.setdefault(("SHA256", hashlib.sha256(data).hexdigest()), set()).add("N/A")
+                                    agg.setdefault(
+                                        ("SHA256", hashlib.sha256(data).hexdigest()),
+                                        set(),
+                                    ).add("N/A")
                         except Exception:
                             pass
             processed = 0
@@ -240,6 +314,13 @@ class IoCNinjaWidget(QWidget):
         self._thread = None
         self._worker = None
         self._start_time = 0.0
+        self._accent_qcolor = self._resolve_accent_color()
+        self._progress_chunk_color = None  # Will be set in _apply_control_styles()
+        # Prepare proxy style for checkboxes
+        try:
+            self._checkbox_style = IoCCheckboxProxyStyle(self.style())
+        except Exception:
+            self._checkbox_style = None
 
         # Display name overrides for IoC types
         self._type_display = {
@@ -266,8 +347,9 @@ class IoCNinjaWidget(QWidget):
         # Build a two-column table to render checkboxes and names without overlap
         self.ioc_table = QTableWidget()
         self.ioc_table.setColumnCount(1)
+        # Make it look/behave like a table (like the right side) but without row grid lines
         self.ioc_table.setShowGrid(False)
-        self.ioc_table.setAlternatingRowColors(False)
+        self.ioc_table.setAlternatingRowColors(True)
         self.ioc_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.ioc_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.ioc_table.verticalHeader().setVisible(False)
@@ -277,7 +359,13 @@ class IoCNinjaWidget(QWidget):
         self.ioc_table.setFocusPolicy(Qt.NoFocus)
         self.ioc_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         try:
-            self.ioc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            self.ioc_table.horizontalHeader().setSectionResizeMode(
+                0, QHeaderView.Stretch
+            )
+        except Exception:
+            pass
+        try:
+            self.ioc_table.setGridStyle(Qt.SolidLine)
         except Exception:
             pass
 
@@ -330,10 +418,32 @@ class IoCNinjaWidget(QWidget):
         row_index = 0
         header_font = QFont(self.font())
         header_font.setBold(True)
+        try:
+            if header_font.pointSize() > 0:
+                header_font.setPointSize(
+                    header_font.pointSize() + 1
+                )  # slightly larger than IoC type rows
+            else:
+                px = header_font.pixelSize()
+                header_font.setPixelSize(max(13, (px + 2) if px and px > 0 else 14))
+        except Exception:
+            pass
         for cat in categories_order:
             keys = sorted(by_cat.get(cat) or [])
             if not keys:
                 continue
+            # Insert a thin separator line before each category (except the first)
+            if row_index > 0:
+                self.ioc_table.insertRow(row_index)
+                try:
+                    sep = self._build_category_separator()
+                    self.ioc_table.setCellWidget(row_index, 0, sep)
+                    # Center the line by giving the separator its own height and centering the 1px rule inside
+                    self.ioc_table.setRowHeight(row_index, sep.height())
+                except Exception:
+                    # Fallback: a minimal gap
+                    self.ioc_table.setRowHeight(row_index, 8)
+                row_index += 1
             # Category header (single column)
             self.ioc_table.insertRow(row_index)
             header_item = QTableWidgetItem(cat)
@@ -345,12 +455,24 @@ class IoCNinjaWidget(QWidget):
             row_index += 1
             # Child rows: checkbox + name
             for ioc_type in keys:
-                display_name = self._type_display.get(ioc_type, ioc_type.replace("_", " "))
+                display_name = self._type_display.get(
+                    ioc_type, ioc_type.replace("_", " ")
+                )
                 self.ioc_table.insertRow(row_index)
                 # Build a single-cell widget with checkbox + label
                 cb = QCheckBox()
                 cb.setProperty("ioc_key", ioc_type)
                 cb.setChecked(False)
+                # Provide colors to proxy style and apply it
+                try:
+                    cb.setProperty(
+                        "ioc_border_qcolor", self._theme_color("CommentColor")
+                    )
+                    cb.setProperty("ioc_tick_qcolor", self._text_color())
+                    if self._checkbox_style is not None:
+                        cb.setStyle(self._checkbox_style)
+                except Exception:
+                    pass
                 name_lbl = QLabel(display_name)
                 name_lbl.setTextInteractionFlags(Qt.NoTextInteraction)
                 cell = QWidget()
@@ -361,13 +483,21 @@ class IoCNinjaWidget(QWidget):
                 lay.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
                 lay.addWidget(cb)
                 lay.addWidget(name_lbl, 1)
+                # Keep default Binary Ninja/Qt styling to avoid visual weirdness
+                # (Previous custom styling removed per user feedback)
+                # Enlarge click target: toggle checkbox when clicking anywhere on the row cell
+                try:
+                    cell.setProperty("ioc_cb", cb)
+                    cell.installEventFilter(self)
+                except Exception:
+                    pass
                 self.ioc_table.setCellWidget(row_index, 0, cell)
                 self.ioc_table.setRowHeight(row_index, 28)
                 row_index += 1
 
         # Select all/none controls (will be placed in top controls row)
-        self.btn_select_all = QPushButton("All")
-        self.btn_select_none = QPushButton("None")
+        self.btn_select_all = QPushButton("✅All")
+        self.btn_select_none = QPushButton("❌None")
         self.btn_select_all.clicked.connect(lambda: self._set_all_checkboxes(True))
         self.btn_select_none.clicked.connect(lambda: self._set_all_checkboxes(False))
         # Tree handles its own scrolling and layout; no extra stretch needed here
@@ -376,21 +506,70 @@ class IoCNinjaWidget(QWidget):
         self.left_panel = QWidget()
         self.left_layout = QVBoxLayout()
         self.left_title = QLabel("IoC Types")
+        # Make the IoC Types title larger and bold
+        try:
+            title_font = QFont(self.font())
+            title_font.setBold(True)
+            if title_font.pointSize() > 0:
+                title_font.setPointSize(title_font.pointSize() + 2)
+            else:
+                # Fallback when using pixel-size fonts
+                px = title_font.pixelSize()
+                title_font.setPixelSize(max(14, (px + 2) if px and px > 0 else 16))
+            self.left_title.setFont(title_font)
+        except Exception:
+            pass
         # Title row with All/None aligned to the right of the title
         self.title_row = QHBoxLayout()
         # Remove inner margins to line up with right controls row
         self.title_row.setContentsMargins(0, 0, 0, 0)
+        try:
+            self.left_title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        except Exception:
+            pass
         self.title_row.addWidget(self.left_title)
         self.title_row.addStretch(1)
         self.title_row.addWidget(self.btn_select_all)
         self.title_row.addWidget(self.btn_select_none)
-        self.left_layout.addLayout(self.title_row)
-        # Add a larger inner margin for better padding
-        self.left_layout.setContentsMargins(16, 16, 16, 16)
+        # Wrap title row in a widget so we can control its height to match right side controls row
+        self.title_bar = QWidget()
+        self.title_bar.setLayout(self.title_row)
+        self.left_layout.addWidget(self.title_bar)
+        # Remove outer margins to align vertically with right controls row
+        self.left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Use the IoC table directly (it scrolls itself)
-        self.left_layout.addWidget(self.ioc_table)
+        # Wrap the IoC table in a boxed container to guarantee visible padding
+        # Container carries the border; inner layout margins are the padding
+        try:
+            self.ioc_table.setViewportMargins(0, 0, 0, 0)
+        except Exception:
+            pass
+        try:
+            self.ioc_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        except Exception:
+            pass
+        self.ioc_box = QWidget()
+        try:
+            self.ioc_box.setObjectName("ioc_box")
+        except Exception:
+            pass
+        self.ioc_box_layout = QVBoxLayout()
+        # Leave a 1px inset so the ioc_box border is visible like the right table
+        self.ioc_box_layout.setContentsMargins(1, 1, 1, 1)
+        self.ioc_box_layout.setSpacing(0)
+        self.ioc_box_layout.addWidget(self.ioc_table)
+        self.ioc_box.setLayout(self.ioc_box_layout)
+        try:
+            self.ioc_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        except Exception:
+            pass
+        self.left_layout.addWidget(self.ioc_box, 1)
         self.left_panel.setLayout(self.left_layout)
+        try:
+            # Ensure the left panel itself prefers to expand vertically
+            self.left_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        except Exception:
+            pass
         # Default: none checked
 
         # Top controls for results
@@ -398,15 +577,45 @@ class IoCNinjaWidget(QWidget):
         self.search_edit.setPlaceholderText("Type/Value/Address")
         self.search_edit.textChanged.connect(self.apply_filter)
 
-        self.btn_scan = QPushButton("Scan")
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_clear = QPushButton("Clear")
-        self.btn_export = QPushButton("Export")
+        self.btn_scan = QPushButton("📡Scan")
+        self.btn_cancel = QPushButton("✋Cancel")
+        try:
+            self.btn_cancel.setObjectName("btn_cancel")
+        except Exception:
+            pass
+        self.btn_clear = QPushButton("🧹Clear")
+        self.btn_export = QPushButton("📦Export")
+        try:
+            self.btn_export.setObjectName("btn_export")
+        except Exception:
+            pass
 
         self.btn_scan.clicked.connect(self.scan)
         self.btn_cancel.clicked.connect(self.cancel_scan)
         self.btn_clear.clicked.connect(self.clear_results)
         self.btn_export.clicked.connect(self.choose_export)
+
+        # Install hover cursor behavior for disabled buttons (no style changes)
+        try:
+            self._install_button_event_filters()
+        except Exception:
+            pass
+        # Override only Cancel's disabled look to match enabled color (no global style changes)
+        try:
+            self._apply_cancel_disabled_style()
+        except Exception:
+            pass
+        # Override only Export's disabled look to match enabled color (no global style changes)
+        try:
+            self._apply_export_disabled_style()
+        except Exception:
+            pass
+
+        # Ensure button text uses theme 'Text' token (or fallback)
+        try:
+            self._apply_button_text_style()
+        except Exception:
+            pass
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 0, 0, 0)
@@ -435,19 +644,33 @@ class IoCNinjaWidget(QWidget):
         self.results_table.setWordWrap(True)
         # Apply zebra color to output table for readability
         self.results_table.setAlternatingRowColors(True)
+        # Render all grid lines (both directions)
+        self.results_table.setShowGrid(True)
+        try:
+            self.results_table.setGridStyle(Qt.SolidLine)
+        except Exception:
+            pass
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        # Make items unclickable: no selection, no focus, no double-click navigation, no context menu
+        self.results_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.results_table.setFocusPolicy(Qt.NoFocus)
         self.results_table.setSortingEnabled(True)
-        self.results_table.itemDoubleClicked.connect(self.goto_address_from_item)
-        self.results_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.results_table.customContextMenuRequested.connect(self._open_context_menu)
+        try:
+            self.results_table.itemDoubleClicked.disconnect()
+        except Exception:
+            pass
+        self.results_table.setContextMenuPolicy(Qt.NoContextMenu)
 
         # Status row
         self.progress = QProgressBar()
         self.progress.setMinimum(0)
         self.progress.setMaximum(100)
         self.progress.setValue(0)
+        try:
+            self.progress.setTextVisible(True)
+        except Exception:
+            pass
         self.status_label = QLabel("Ready")
         status = QHBoxLayout()
         status.addWidget(self.progress)
@@ -457,6 +680,8 @@ class IoCNinjaWidget(QWidget):
         # Right side layout (controls + table + status)
         right = QWidget()
         right_layout = QVBoxLayout()
+        # Match left side: no outer margins so rows start parallel
+        right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addLayout(controls)
         right_layout.addWidget(self.results_table)
         right_layout.addLayout(status)
@@ -485,6 +710,31 @@ class IoCNinjaWidget(QWidget):
             h = self.btn_scan.sizeHint().height()
             self.btn_select_all.setFixedHeight(h)
             self.btn_select_none.setFixedHeight(h)
+            # Ensure the title bar has enough room for the larger title
+            th = self.left_title.sizeHint().height()
+            self.title_bar.setMinimumHeight(max(h, th))
+        except Exception:
+            pass
+
+        # No per-row custom styling; rely on platform/BN theme defaults
+
+        # Apply accent styling to progress/search controls
+        try:
+            self._apply_control_styles()
+        except Exception:
+            pass
+        try:
+            self._apply_results_table_style()
+        except Exception:
+            pass
+        # Apply IoC list (left box) border to match output table border color
+        try:
+            self._apply_ioc_table_style()
+        except Exception:
+            pass
+        # Apply checkbox border color using Binary Ninja CommentColor for all checkboxes in this widget
+        try:
+            self._apply_checkbox_border_style()
         except Exception:
             pass
 
@@ -511,6 +761,8 @@ class IoCNinjaWidget(QWidget):
             cb = w.findChild(QCheckBox)
             if cb:
                 cb.setChecked(value)
+        # Refresh row styles after bulk toggle
+        self._refresh_all_ioc_row_styles()
 
     def _gather_selected_patterns(self):
         selected = {}
@@ -571,10 +823,510 @@ class IoCNinjaWidget(QWidget):
         self.apply_filter()
         self._columns_sized = False
 
+    # ---------- UI styling helpers (accent color + IoC row visibility) ----------
+
+    def _resolve_accent_color(self) -> QColor:
+        """Try to use Binary Ninja's theme accent; fall back to Qt palette.
+        Returns a QColor that should be clearly visible on the current background.
+        """
+        # Attempt to pull BN theme color via binaryninjaui if available
+        try:
+            from binaryninjaui import getThemeColor  # type: ignore
+            from binaryninja.enums import ThemeColor  # type: ignore
+
+            # Prefer a strong standard highlight; fall back to selection color
+            qcol = getThemeColor(ThemeColor.BlueStandardHighlightColor)
+            if isinstance(qcol, QColor):
+                return qcol
+            # Some builds might return a tuple; attempt conversion
+            if (
+                qcol
+                and hasattr(qcol, "red")
+                and hasattr(qcol, "green")
+                and hasattr(qcol, "blue")
+            ):
+                return QColor(qcol.red(), qcol.green(), qcol.blue())
+        except Exception:
+            pass
+        # Fallback to the widget palette highlight color
+        try:
+            return self.palette().highlight().color()
+        except Exception:
+            pass
+        # Ultimate fallback: a safe blue accent
+        return QColor(0x00, 0x78, 0xD7)
+
+    def _accent_rgb(self) -> tuple:
+        c = self._accent_qcolor
+        return (c.red(), c.green(), c.blue())
+
+    def _accent_css(self, alpha: int = 48) -> str:
+        """Return rgba() string for accent with given alpha (0-255)."""
+        r, g, b = self._accent_rgb()
+        # Qt css uses rgba(r,g,b,a) with 0-255 alpha in many styles
+        return f"rgba({r}, {g}, {b}, {alpha})"
+
+    def _wire_ioc_row_styling(self, container: QWidget, cb: QCheckBox):
+        """No-op: keep default theme appearance for checkboxes and rows."""
+        try:
+            cb.setStyleSheet("")
+        except Exception:
+            pass
+        try:
+            container.setStyleSheet("")
+        except Exception:
+            pass
+
+    def _refresh_all_ioc_row_styles(self):
+        for r in range(self.ioc_table.rowCount()):
+            w = self.ioc_table.cellWidget(r, 0)
+            if not w:
+                continue
+            cb = w.findChild(QCheckBox)
+            if cb:
+                # Ensure any prior custom style is cleared
+                try:
+                    cb.setStyleSheet("")
+                    w.setStyleSheet("")
+                except Exception:
+                    pass
+
+    def _apply_control_styles(self):
+        """Style progress bar and search bar using Binary Ninja theme colors."""
+        # Borders: use the same color as checkbox borders
+        outline = self._checkbox_border_color()
+        button_col = self._button_color()
+        self._progress_chunk_color = button_col
+        self._apply_progress_style(outline, button_col)
+
+        # Search bar: force checkbox-border color in all interactive states
+        # Use pane background from theme for a coherent fill
+        try:
+            pane_bg = (
+                self._theme_color("ActivePaneBackgroundColor")
+                or self._theme_color("InactivePaneBackgroundColor")
+                or self.palette().base().color()
+            )
+        except Exception:
+            pane_bg = self.palette().base().color()
+        sel = outline
+        le_css = (
+            "QLineEdit {"
+            f" background-color: {self._qcolor_css(pane_bg)}; border: 1px solid {self._qcolor_css(outline)}; border-radius: 0px;"
+            " padding: 3px; color: palette(window-text);"
+            "}"
+            f" QLineEdit:focus {{ border: 1px solid {self._qcolor_css(sel)}; }}"
+            f" QLineEdit:hover {{ border: 1px solid {self._qcolor_css(sel)}; }}"
+            f" QLineEdit:disabled {{ border: 1px solid {self._qcolor_css(sel)}; color: palette(mid); }}"
+            " QLineEdit::placeholder { color: palette(mid); }"
+        )
+        try:
+            self.search_edit.setStyleSheet(le_css)
+        except Exception:
+            pass
+
+    def _apply_progress_style(self, outline: QColor, button: QColor):
+        """套用進度條樣式：邊框用 CommentColor；背景與 chunk 均使用按鈕色（依你的要求）。"""
+        bg_css = self._qcolor_css(button)
+        chunk_css = self._qcolor_css(button)
+        pb_css = (
+            "QProgressBar {"
+            f" border: 1px solid {self._qcolor_css(outline)}; border-radius: 0px;"
+            f" background-color: {bg_css}; color: palette(window-text); text-align: center;"
+            "}"
+            f" QProgressBar::chunk {{ background-color: {chunk_css}; border-radius: 0px; }}"
+        )
+        try:
+            self.progress.setStyleSheet(pb_css)
+        except Exception:
+            pass
+
+    def _set_progress_status(self, success: bool | None):
+        """維持邊框為 CommentColor；進度條本體與 chunk 使用按鈕色。"""
+        outline = self._theme_color("CommentColor")
+        self._progress_chunk_color = self._button_color()
+        self._apply_progress_style(outline, self._progress_chunk_color)
+
+    def _button_color(self) -> QColor:
+        """Return a color that matches the visual button color.
+        Prefer the highlight/accent when Button role is too neutral (often equals border/base).
+        """
+        try:
+            pal = (
+                self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            )
+            col_btn = pal.color(QPalette.Button)
+            col_hl = pal.highlight().color()
+            # If Button color is too close to border/window (neutral), use highlight which better reflects real button
+            try:
+                border = self._theme_color("CommentColor")
+                win = pal.window().color()
+            except Exception:
+                border = QColor(128, 128, 128)
+                win = pal.window().color() if pal else QColor(40, 40, 40)
+
+            def _dist(a: QColor, b: QColor) -> int:
+                return (
+                    abs(a.red() - b.red())
+                    + abs(a.green() - b.green())
+                    + abs(a.blue() - b.blue())
+                )
+
+            # If Button looks like border/window (very small distance), switch to highlight
+            if _dist(col_btn, border) <= 12 or _dist(col_btn, win) <= 12:
+                return col_hl
+            return col_btn
+        except Exception:
+            # Fallback to a reasonable accent
+            try:
+                return self._theme_color("BlueStandardHighlightColor")
+            except Exception:
+                return QColor(0, 120, 215)
+
+    def _apply_results_table_style(self):
+        """Use Binary Ninja theme colors for grid/rows/selection/header in results table."""
+        comment = self._theme_color("CommentColor")
+        bg = self._theme_color("ActivePaneBackgroundColor") or self._theme_color(
+            "InactivePaneBackgroundColor"
+        )
+        alt_bg = (
+            self._theme_color("BackgroundHighlightLightColor")
+            or self._theme_color("BackgroundHighlightDarkColor")
+            or bg
+        )
+        sel = (
+            self._theme_color("TokenSelectionColor")
+            or self._theme_color("SelectionColor")
+            or self._accent_qcolor
+        )
+        # Header background should match the button color per request
+        header_bg = self._button_color()
+
+        table_css = (
+            "QTableView {"
+            f" gridline-color: {self._qcolor_css(comment)};"
+            f" border: 1px solid {self._qcolor_css(comment)};"
+            f" border-radius: 0px;"
+            f" background-color: {self._qcolor_css(bg)};"
+            f" alternate-background-color: {self._qcolor_css(alt_bg)};"
+            "}"
+            " QTableView::item {"
+            " border: none;"
+            " padding: 2px 4px;"
+            "}"
+            f" QTableView::item:selected {{ background-color: {self._qcolor_css(sel)}; color: palette(bright-text); }}"
+            " QHeaderView::section {"
+            f" background-color: {self._qcolor_css(header_bg)}; color: palette(window-text);"
+            f" border: 1px solid {self._qcolor_css(comment)};"
+            " padding: 4px 6px;"
+            "}"
+        )
+        self.results_table.setStyleSheet(table_css)
+
+    def _apply_ioc_table_style(self):
+        """Make IoC types box look like a table: same border color, gridlines, and alternating rows."""
+        comment = self._theme_color("CommentColor")
+        bg = self._theme_color("ActivePaneBackgroundColor") or self._theme_color(
+            "InactivePaneBackgroundColor"
+        )
+        alt_bg = (
+            self._theme_color("BackgroundHighlightLightColor")
+            or self._theme_color("BackgroundHighlightDarkColor")
+            or bg
+        )
+        sel = (
+            self._theme_color("TokenSelectionColor")
+            or self._theme_color("SelectionColor")
+            or self._accent_qcolor
+        )
+        box_css = (
+            "QWidget#ioc_box {"
+            f" border: 1px solid {self._qcolor_css(comment)};"
+            f" border-radius: 0px;"
+            f" background-color: {self._qcolor_css(bg)};"
+            "}"
+        )
+        table_css = (
+            "QTableView {"
+            f" gridline-color: {self._qcolor_css(comment)};"
+            f" border-radius: 0px;"
+            f" background-color: {self._qcolor_css(bg)};"
+            f" alternate-background-color: {self._qcolor_css(alt_bg)};"
+            "}"
+            " QTableView::item { border: none; padding: 2px 4px; }"
+            f" QTableView::item:selected {{ background-color: {self._qcolor_css(sel)}; color: palette(bright-text); }}"
+        )
+        try:
+            # Apply border/background to the box container
+            self.ioc_box.setStyleSheet(box_css)
+            # Apply grid/alt-row styling to the inner table to match right side
+            self.ioc_table.setStyleSheet(table_css)
+        except Exception:
+            pass
+
+    def _build_category_separator(
+        self, total_height: int = 10, thickness: int = 1
+    ) -> QWidget:
+        """Create a separator row with a 1px rule centered vertically between categories.
+        total_height controls the visual gap; thickness is the rule thickness.
+        """
+        try:
+            color = self._theme_color("CommentColor")
+        except Exception:
+            color = QColor(128, 128, 128)
+        container = QWidget()
+        try:
+            container.setFixedHeight(total_height)
+            lay = QVBoxLayout(container)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            lay.addStretch(1)
+            line = QWidget()
+            line.setFixedHeight(thickness)
+            line.setStyleSheet(f"background-color: {self._qcolor_css(color)};")
+            lay.addWidget(line)
+            lay.addStretch(1)
+            container.setLayout(lay)
+        except Exception:
+            try:
+                container.setFixedHeight(max(4, total_height))
+            except Exception:
+                pass
+        return container
+
+    def _corner_radius_px(self) -> int:
+        """Unified corner radius in pixels for controls/boxes."""
+        return 6
+
+    def _theme_color(self, name: str) -> QColor:
+        """Fetch a QColor from Binary Ninja theme by ThemeColor name. Safe fallback to palette."""
+        try:
+            from binaryninjaui import getThemeColor  # type: ignore
+            from binaryninja.enums import ThemeColor  # type: ignore
+
+            if hasattr(ThemeColor, name):
+                return getThemeColor(getattr(ThemeColor, name))
+        except Exception:
+            pass
+        # Palette-based fallback
+        try:
+            pal = self.palette()
+            if name.endswith("BackgroundColor"):
+                return pal.window().color()
+            if name.endswith("SelectionColor"):
+                return pal.highlight().color()
+            # Outline fallback to mid color
+            return pal.mid().color()
+        except Exception:
+            return self._accent_qcolor
+
+    def _qcolor_css(self, c: QColor, alpha: int | None = None) -> str:
+        """Return CSS rgba()/rgb() from QColor using optional alpha override (0-255)."""
+        if c is None:
+            c = self._accent_qcolor
+        if alpha is None:
+            return f"rgb({c.red()},{c.green()},{c.blue()})"
+        return f"rgba({c.red()},{c.green()},{c.blue()},{alpha})"
+
+    def _theme_color_if_available(self, name: str):
+        """Return a QColor for a Binary Ninja ThemeColor if it exists; otherwise None.
+        Does not fall back to palette. Safe to use for probing token availability.
+        """
+        try:
+            from binaryninjaui import getThemeColor  # type: ignore
+            from binaryninja.enums import ThemeColor  # type: ignore
+
+            if hasattr(ThemeColor, name):
+                return getThemeColor(getattr(ThemeColor, name))
+        except Exception:
+            pass
+        return None
+
+    def _text_color(self) -> QColor:
+        """Return theme-driven text color.
+        Prefer Binary Ninja theme token 'Text' (or 'TextColor') when available,
+        otherwise fall back to the palette window text, then a safe light gray.
+        """
+        # Try explicit BN theme tokens first without palette fallback
+        c = self._theme_color_if_available("Text")
+        if isinstance(c, QColor):
+            return c
+        c = self._theme_color_if_available("TextColor")
+        if isinstance(c, QColor):
+            return c
+        # Fall back to palette window text
+        try:
+            return self.palette().windowText().color()
+        except Exception:
+            pass
+        # Last resort: try a reasonable token, else hardcoded
+        c = self._theme_color_if_available("InstructionColor")
+        if isinstance(c, QColor):
+            return c
+        return QColor(220, 220, 220)
+
+    def _checkbox_border_color(self) -> QColor:
+        """Return the color used for checkbox borders so search bar matches it."""
+        try:
+            return self._theme_color("CommentColor")
+        except Exception:
+            try:
+                return self.palette().mid().color()
+            except Exception:
+                return QColor(120, 120, 120)
+
+    def _apply_checkbox_border_style(self):
+        """Ensure all IoC checkboxes use ProxyStyle (custom border + visible tick).
+        Avoid Qt StyleSheet rules for QCheckBox::indicator because they override custom painting
+        and can hide the check mark depending on theme.
+        """
+        try:
+            border = self._theme_color("CommentColor")
+            tick = self._text_color()
+            for r in range(self.ioc_table.rowCount()):
+                w = self.ioc_table.cellWidget(r, 0)
+                if not w:
+                    continue
+                cb = w.findChild(QCheckBox)
+                if not cb:
+                    continue
+                cb.setProperty("ioc_border_qcolor", border)
+                cb.setProperty("ioc_tick_qcolor", tick)
+                if self._checkbox_style is not None:
+                    cb.setStyle(self._checkbox_style)
+                # Clear any per-widget stylesheet that might interfere
+                cb.setStyleSheet("")
+        except Exception:
+            pass
+
+    def eventFilter(self, watched, event):
+        """Toggle IoC checkbox when user clicks anywhere inside the cell widget.
+        This keeps UX smooth even if indicator visuals vary by theme/CSS.
+        """
+        try:
+            # Show forbidden cursor when hovering disabled buttons; do not alter button style
+            from PySide6.QtWidgets import QPushButton
+
+            if isinstance(watched, QPushButton):
+                if event.type() in (QEvent.Enter, QEvent.HoverEnter, QEvent.HoverMove):
+                    if not watched.isEnabled():
+                        watched.setCursor(Qt.ForbiddenCursor)
+                    else:
+                        watched.unsetCursor()
+                elif event.type() in (QEvent.Leave, QEvent.HoverLeave, QEvent.Hide):
+                    watched.unsetCursor()
+                # Never consume button events here
+                return False
+            if isinstance(watched, QWidget) and watched.property("ioc_cb") is not None:
+                # If the click is on the actual checkbox (or its children), let it handle itself
+                if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease):
+                    cb = watched.property("ioc_cb")
+                    if isinstance(cb, QCheckBox):
+                        child = watched.childAt(event.pos())
+                        if child is not None and (
+                            child is cb or cb.isAncestorOf(child)
+                        ):
+                            return False  # do not double-toggle
+                    if (
+                        event.type() == QEvent.MouseButtonRelease
+                        and event.button() == Qt.LeftButton
+                    ):
+                        if isinstance(cb, QCheckBox) and cb.isEnabled():
+                            cb.setChecked(not cb.isChecked())
+                            return True
+        except Exception:
+            pass
+        return super().eventFilter(watched, event)
+
+    def _install_button_event_filters(self):
+        """Install event filters so disabled buttons show a 'not-allowed' cursor on hover.
+        No visual style is changed; only the cursor feedback is provided.
+        """
+        buttons = [
+            getattr(self, "btn_scan", None),
+            getattr(self, "btn_cancel", None),
+            getattr(self, "btn_clear", None),
+            getattr(self, "btn_export", None),
+            getattr(self, "btn_select_all", None),
+            getattr(self, "btn_select_none", None),
+        ]
+        for b in buttons:
+            if b is not None:
+                try:
+                    b.setAttribute(Qt.WA_Hover, True)
+                except Exception:
+                    pass
+                try:
+                    b.installEventFilter(self)
+                except Exception:
+                    pass
+
+    def _apply_cancel_disabled_style(self):
+        """Make only the Cancel button's disabled state use the normal (enabled) background color.
+        Does not alter other buttons or other states.
+        """
+        try:
+            # Use an enabled button's color as the reference (Scan is enabled when idle)
+            ref_pal = self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            btn_col = ref_pal.color(QPalette.Button)
+            rgb = self._qcolor_css(btn_col)
+            css = (
+                "QPushButton#btn_cancel:disabled {"
+                f" background-color: {rgb};"
+                f" color: {self._qcolor_css(self._text_color())};"
+                "}"
+            )
+            self.btn_cancel.setStyleSheet(css)
+        except Exception:
+            pass
+
+    def _apply_export_disabled_style(self):
+        """Make only the Export button's disabled state use the normal (enabled) background color.
+        Does not alter other buttons or other states.
+        """
+        try:
+            ref_pal = self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            btn_col = ref_pal.color(QPalette.Button)
+            rgb = self._qcolor_css(btn_col)
+            css = (
+                "QPushButton#btn_export:disabled {"
+                f" background-color: {rgb};"
+                f" color: {self._qcolor_css(self._text_color())};"
+                "}"
+            )
+            self.btn_export.setStyleSheet(css)
+        except Exception:
+            pass
+
+    def _apply_button_text_style(self):
+        """Apply text color for all buttons using the theme 'Text' token when available."""
+        try:
+            text_css = self._qcolor_css(self._text_color())
+            css = f"QPushButton {{ color: {text_css}; }}"
+            buttons = [
+                getattr(self, "btn_scan", None),
+                getattr(self, "btn_cancel", None),
+                getattr(self, "btn_clear", None),
+                getattr(self, "btn_export", None),
+                getattr(self, "btn_select_all", None),
+                getattr(self, "btn_select_none", None),
+            ]
+            for b in buttons:
+                if b is not None:
+                    existing = b.styleSheet() or ""
+                    combined = (existing + "\n" + css).strip() if existing else css
+                    b.setStyleSheet(combined)
+        except Exception:
+            pass
+
     def _upsert_row(self, ioc_type: str, value: str, addr_str: str):
         # Update row if Type+Value exists; else insert a new row.
         # For display, replace underscores with spaces in type column
-        ioc_type_disp = self._type_display.get(ioc_type, ioc_type.replace("_", " ")) if ioc_type else ioc_type
+        ioc_type_disp = (
+            self._type_display.get(ioc_type, ioc_type.replace("_", " "))
+            if ioc_type
+            else ioc_type
+        )
         rows = self.results_table.rowCount()
         target_row = -1
         for r in range(rows):
@@ -889,6 +1641,11 @@ class IoCNinjaWidget(QWidget):
         # Reflect completion on progress bar
         self.progress.setMaximum(100)
         self.progress.setValue(100)
+        # Use green highlight color for success
+        try:
+            self._set_progress_status(True)
+        except Exception:
+            pass
         self.status_label.setText(
             f"Findings: {len(results)} | Strings Scanned: {scanned} | Elapsed {elapsed:.1f}s"
         )
@@ -898,11 +1655,21 @@ class IoCNinjaWidget(QWidget):
     def _on_failed(self, msg: str):
         self.status_label.setText(f"Scan failed: {msg}")
         self._set_scanning(False)
+        # Use red highlight color for failure
+        try:
+            self._set_progress_status(False)
+        except Exception:
+            pass
         self._teardown_thread()
 
     def _on_canceled(self):
         self.status_label.setText("Scan canceled")
         self._set_scanning(False)
+        # Restore default selection-themed chunk color
+        try:
+            self._set_progress_status(None)
+        except Exception:
+            pass
         self._teardown_thread()
 
     def _open_context_menu(self, pos):
