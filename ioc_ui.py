@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QCheckBox,
     QPushButton,
+    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QProxyStyle,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent
+import os
 
 from . import ioc_logic
 from .tld_data import VALID_TLDS
@@ -321,11 +323,17 @@ class IoCNinjaWidget(QWidget):
             self._checkbox_style = IoCCheckboxProxyStyle(self.style())
         except Exception:
             self._checkbox_style = None
+        # Binary selection state
+        self._bvs_by_name: dict[str, BinaryView] = {}
 
         # Display name overrides for IoC types
         self._type_display = {
             "OpenAI_SG": "OpenAI API Key",
+            "UserAgent_hdr": "UserAgent Header",
         }
+
+        # Soft-wrap configuration for long, unbroken strings in the Value column
+        self._wrap_run_length = 16  # insert zero-width space every N chars when no natural breaks
 
         # Left panel: IoC type filters (categorized) as a two-column tree: [checkbox][name]
         self.ioc_tree = QTreeWidget()
@@ -554,8 +562,13 @@ class IoCNinjaWidget(QWidget):
         except Exception:
             pass
         self.ioc_box_layout = QVBoxLayout()
-        # Leave a 1px inset so the ioc_box border is visible like the right table
-        self.ioc_box_layout.setContentsMargins(1, 1, 1, 1)
+        # Leave horizontal inset 1px for border visibility, and add vertical padding
+        # equal to the visual gap between a divider and the next category title.
+        try:
+            pad_v = self._category_divider_gap()
+        except Exception:
+            pad_v = 4
+        self.ioc_box_layout.setContentsMargins(1, pad_v, 1, pad_v)
         self.ioc_box_layout.setSpacing(0)
         self.ioc_box_layout.addWidget(self.ioc_table)
         self.ioc_box.setLayout(self.ioc_box_layout)
@@ -623,6 +636,44 @@ class IoCNinjaWidget(QWidget):
         controls.addWidget(self.btn_cancel)
         controls.addWidget(self.btn_clear)
         controls.addStretch(1)
+        # Binary selector: choose active BinaryView for scanning/navigation
+        self.binary_selector = QComboBox()
+        try:
+            # Prevent long names from overflowing: elide in the middle and cap width
+            try:
+                self.binary_selector.setElideMode(Qt.ElideMiddle)
+            except Exception:
+                pass
+            try:
+                self.binary_selector.setSizeAdjustPolicy(
+                    QComboBox.AdjustToMinimumContentsLengthWithIcon
+                )
+                self.binary_selector.setMinimumContentsLength(24)
+            except Exception:
+                pass
+            try:
+                self.binary_selector.setMaximumWidth(320)
+            except Exception:
+                pass
+            # Refresh list on popup to catch newly opened binaries
+            try:
+                _orig_show = self.binary_selector.showPopup
+
+                def _wrap_show_popup():
+                    try:
+                        self._setup_binary_selector()
+                    except Exception:
+                        pass
+                    _orig_show()
+
+                self.binary_selector.showPopup = _wrap_show_popup  # type: ignore[assignment]
+            except Exception:
+                pass
+            self._setup_binary_selector()
+        except Exception:
+            pass
+        controls.addWidget(QLabel("Binary:"))
+        controls.addWidget(self.binary_selector)
         controls.addWidget(QLabel("Search:"))
         controls.addWidget(self.search_edit)
         controls.addWidget(self.btn_export)
@@ -631,12 +682,17 @@ class IoCNinjaWidget(QWidget):
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(3)
         self.results_table.setHorizontalHeaderLabels(["Type", "Value", "Address"])
-        # Allow user to adjust column widths interactively
-        self.results_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Interactive
-        )
-        # Ensure table visually uses full available width by stretching last column
-        self.results_table.horizontalHeader().setStretchLastSection(True)
+        # Columns stretch to fill available width; no horizontal scrolling
+        try:
+            header = self.results_table.horizontalHeader()
+            for c in range(3):
+                header.setSectionResizeMode(c, QHeaderView.Stretch)
+        except Exception:
+            pass
+        try:
+            self.results_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        except Exception:
+            pass
         # Encourage the table to expand to fill the right panel
         self.results_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Show full content: no ellipsis and allow wrapping
@@ -651,6 +707,10 @@ class IoCNinjaWidget(QWidget):
         except Exception:
             pass
         self.results_table.verticalHeader().setVisible(False)
+        try:
+            self.results_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        except Exception:
+            pass
         self.results_table.setEditTriggers(QTableWidget.NoEditTriggers)
         # Make items unclickable: no selection, no focus, no double-click navigation, no context menu
         self.results_table.setSelectionMode(QAbstractItemView.NoSelection)
@@ -661,6 +721,11 @@ class IoCNinjaWidget(QWidget):
         except Exception:
             pass
         self.results_table.setContextMenuPolicy(Qt.NoContextMenu)
+        # Click behavior: copy Value on column 1, navigate on Address column 2
+        try:
+            self.results_table.itemClicked.connect(self._on_results_item_clicked)
+        except Exception:
+            pass
 
         # Status row
         self.progress = QProgressBar()
@@ -735,6 +800,178 @@ class IoCNinjaWidget(QWidget):
         # Apply checkbox border color using Binary Ninja CommentColor for all checkboxes in this widget
         try:
             self._apply_checkbox_border_style()
+        except Exception:
+            pass
+
+    def _setup_binary_selector(self):
+        """Populate the binary selector with available BinaryViews (best effort).
+        Defaults to the current BinaryView; tries to discover others via UI context if available.
+        """
+        self.binary_selector.clear()
+        self._bvs_by_name.clear()
+        # Always include current view
+        def _bv_display_name(bv: BinaryView) -> str:
+            try:
+                f = getattr(bv, "file", None)
+                n = getattr(f, "original_filename", None)
+                if n:
+                    return os.path.basename(str(n))
+            except Exception:
+                pass
+            try:
+                v = getattr(bv, "view", "Current Binary")
+                return os.path.basename(str(v))
+            except Exception:
+                return "Current Binary"
+
+        try:
+            names: list[tuple[str, BinaryView]] = []
+            seen_bv_ids: set[int] = set()
+            # Always include current view
+            if self.bv is not None:
+                names.append((_bv_display_name(self.bv), self.bv))
+                try:
+                    seen_bv_ids.add(id(self.bv))
+                except Exception:
+                    pass
+
+            # Attempt 1: UIContext view frames (varies by BN build)
+            try:
+                from binaryninjaui import UIContext  # type: ignore
+
+                ctxs = []
+                for meth in ("allContexts", "globalContexts"):
+                    if hasattr(UIContext, meth):
+                        try:
+                            ctxs = list(getattr(UIContext, meth)())
+                            break
+                        except Exception:
+                            ctxs = []
+                if not ctxs:
+                    c = None
+                    try:
+                        c = UIContext.activeContext()
+                    except Exception:
+                        c = None
+                    if c:
+                        ctxs = [c]
+                for ctx in ctxs:
+                    frames = []
+                    for fmeth in ("getViewFrames", "viewFrames", "getAllViewFrames"):
+                        if hasattr(ctx, fmeth):
+                            try:
+                                frames = list(getattr(ctx, fmeth)())
+                                break
+                            except Exception:
+                                frames = []
+                    for vf in frames:
+                        bv = None
+                        for bv_meth in ("getCurrentBinaryView", "binaryView", "getBinaryView"):
+                            try:
+                                attr = getattr(vf, bv_meth)
+                                bv = attr() if callable(attr) else attr
+                                if isinstance(bv, BinaryView):
+                                    break
+                            except Exception:
+                                continue
+                        if bv and isinstance(bv, BinaryView):
+                            if id(bv) not in seen_bv_ids:
+                                seen_bv_ids.add(id(bv))
+                                names.append((_bv_display_name(bv), bv))
+            except Exception:
+                pass
+
+            # Attempt 2: scan Qt widget tree for objects exposing .binaryView
+            try:
+                from PySide6.QtWidgets import QApplication
+
+                app = QApplication.instance()
+                if app is not None:
+                    for tlw in app.topLevelWidgets():
+                        try:
+                            for obj in tlw.findChildren(object):
+                                bv = None
+                                for bv_attr in ("binaryView", "getBinaryView", "getCurrentBinaryView"):
+                                    try:
+                                        attr = getattr(obj, bv_attr, None)
+                                        if callable(attr):
+                                            val = attr()
+                                        else:
+                                            val = attr
+                                        if isinstance(val, BinaryView):
+                                            bv = val
+                                            break
+                                    except Exception:
+                                        continue
+                                if bv and id(bv) not in seen_bv_ids:
+                                    seen_bv_ids.add(id(bv))
+                                    names.append((_bv_display_name(bv), bv))
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+            seen = set()
+            for disp, bv in names:
+                key = f"{disp}"
+                if key in seen:
+                    # Disambiguate duplicates
+                    idx = 2
+                    new_key = f"{disp} ({idx})"
+                    while new_key in seen:
+                        idx += 1
+                        new_key = f"{disp} ({idx})"
+                    key = new_key
+                seen.add(key)
+                self._bvs_by_name[key] = bv
+                self.binary_selector.addItem(key)
+                try:
+                    # Prefer full path in tooltip when available
+                    full = None
+                    try:
+                        f = getattr(bv, "file", None)
+                        full = getattr(f, "original_filename", None)
+                    except Exception:
+                        full = None
+                    tooltip = str(full) if full else key
+                    self.binary_selector.setItemData(
+                        self.binary_selector.count() - 1, tooltip, Qt.ToolTipRole
+                    )
+                except Exception:
+                    pass
+            # Select current
+            try:
+                self.binary_selector.setCurrentIndex(0)
+            except Exception:
+                pass
+            # Wire selection change
+            try:
+                self.binary_selector.currentTextChanged.connect(self._on_binary_changed)
+            except Exception:
+                pass
+        except Exception:
+            # Fallback: single current item
+            self._bvs_by_name.clear()
+            nm = _bv_display_name(self.bv)
+            self._bvs_by_name[nm] = self.bv
+            self.binary_selector.addItem(nm)
+            try:
+                self.binary_selector.setEnabled(False)
+            except Exception:
+                pass
+
+    def _on_binary_changed(self, name: str):
+        """Switch current BinaryView and reset UI state appropriately."""
+        try:
+            bv = self._bvs_by_name.get(name)
+            if not bv or bv is self.bv:
+                return
+            self.bv = bv
+            # Clear results and reset status/progress
+            self.clear_results()
+            self.progress.setMaximum(100)
+            self.progress.setValue(0)
+            self.status_label.setText("Ready")
         except Exception:
             pass
 
@@ -926,8 +1163,19 @@ class IoCNinjaWidget(QWidget):
             pass
 
     def _apply_progress_style(self, outline: QColor, button: QColor):
-        """套用進度條樣式：邊框用 CommentColor；背景與 chunk 均使用按鈕色（依你的要求）。"""
-        bg_css = self._qcolor_css(button)
+        """Apply progress bar style: border uses CommentColor; chunk uses button color; background uses pane/base color.
+        This ensures the bar is not fully colored at 0% and fills progressively.
+        """
+        # Neutral background from theme pane/base color
+        try:
+            bg = (
+                self._theme_color("ActivePaneBackgroundColor")
+                or self._theme_color("InactivePaneBackgroundColor")
+                or self.palette().base().color()
+            )
+        except Exception:
+            bg = self.palette().base().color()
+        bg_css = self._qcolor_css(bg)
         chunk_css = self._qcolor_css(button)
         pb_css = (
             "QProgressBar {"
@@ -942,7 +1190,8 @@ class IoCNinjaWidget(QWidget):
             pass
 
     def _set_progress_status(self, success: bool | None):
-        """維持邊框為 CommentColor；進度條本體與 chunk 使用按鈕色。"""
+        """Keep border using CommentColor; chunk uses button color; background uses pane/base.
+        """
         outline = self._theme_color("CommentColor")
         self._progress_chunk_color = self._button_color()
         self._apply_progress_style(outline, self._progress_chunk_color)
@@ -999,8 +1248,7 @@ class IoCNinjaWidget(QWidget):
             or self._theme_color("SelectionColor")
             or self._accent_qcolor
         )
-        # Header background should match the button color per request
-        header_bg = self._button_color()
+        # Do not force a header background color; use theme default
 
         table_css = (
             "QTableView {"
@@ -1016,9 +1264,19 @@ class IoCNinjaWidget(QWidget):
             "}"
             f" QTableView::item:selected {{ background-color: {self._qcolor_css(sel)}; color: palette(bright-text); }}"
             " QHeaderView::section {"
-            f" background-color: {self._qcolor_css(header_bg)}; color: palette(window-text);"
-            f" border: 1px solid {self._qcolor_css(comment)};"
+            " border: none;"
+            f" border-bottom: 1px solid {self._qcolor_css(comment)};"
             " padding: 4px 6px;"
+            "}"
+            " QHeaderView::section:horizontal {"
+            f" border-right: 1px solid {self._qcolor_css(comment)};"
+            "}"
+            " QHeaderView::section:horizontal:last {"
+            " border-right: none;"
+            "}"
+            " QTableCornerButton::section {"
+            " border: none;"
+            " background-color: transparent;"
             "}"
         )
         self.results_table.setStyleSheet(table_css)
@@ -1094,6 +1352,18 @@ class IoCNinjaWidget(QWidget):
                 pass
         return container
 
+    def _category_divider_gap(self) -> int:
+        """Return the vertical gap between a divider line and the next category title.
+        Mirrors defaults from _build_category_separator(total_height=10, thickness=1).
+        Computed as half of (total_height - thickness).
+        """
+        total_height = 10
+        thickness = 1
+        try:
+            return max(0, int((total_height - thickness) // 2))
+        except Exception:
+            return 4
+
     def _corner_radius_px(self) -> int:
         """Unified corner radius in pixels for controls/boxes."""
         return 6
@@ -1127,6 +1397,29 @@ class IoCNinjaWidget(QWidget):
         if alpha is None:
             return f"rgb({c.red()},{c.green()},{c.blue()})"
         return f"rgba({c.red()},{c.green()},{c.blue()},{alpha})"
+
+    def _wrapable_text(self, s: str) -> str:
+        """Return text with zero-width space opportunities so Qt can wrap long tokens.
+        - Inserts U+200B after common separators (/, \\, ., :, ?, &, =, -, _)
+        - Also inserts U+200B every self._wrap_run_length chars in long runs with no separators
+        Original string is preserved for tooltips/export.
+        """
+        if not s:
+            return s
+        breaks = set("/\\.:?&=-_")
+        out = []
+        run = 0
+        for ch in s:
+            out.append(ch)
+            if ch in breaks:
+                out.append("\u200b")
+                run = 0
+            else:
+                run += 1
+                if self._wrap_run_length and run >= self._wrap_run_length:
+                    out.append("\u200b")
+                    run = 0
+        return "".join(out)
 
     def _theme_color_if_available(self, name: str):
         """Return a QColor for a Binary Ninja ThemeColor if it exists; otherwise None.
@@ -1336,7 +1629,7 @@ class IoCNinjaWidget(QWidget):
                 t_item
                 and v_item
                 and t_item.text() == ioc_type_disp
-                and v_item.text() == value
+                and v_item.text().replace("\u200b", "") == value
             ):
                 target_row = r
                 break
@@ -1344,7 +1637,14 @@ class IoCNinjaWidget(QWidget):
             target_row = rows
             self.results_table.insertRow(target_row)
             self.results_table.setItem(target_row, 0, QTableWidgetItem(ioc_type_disp))
-            self.results_table.setItem(target_row, 1, QTableWidgetItem(value))
+            val_item = QTableWidgetItem(self._wrapable_text(value))
+            val_item.setToolTip(value)
+            self.results_table.setItem(target_row, 1, val_item)
+        else:
+            # Update existing value text with wrap opportunities too
+            val_item = QTableWidgetItem(self._wrapable_text(value))
+            val_item.setToolTip(value)
+            self.results_table.setItem(target_row, 1, val_item)
         self.results_table.setItem(target_row, 2, QTableWidgetItem(addr_str))
         return target_row
 
@@ -1432,9 +1732,9 @@ class IoCNinjaWidget(QWidget):
             addr_item = self.results_table.item(r, 2)
             rows.append(
                 [
-                    type_item.text() if type_item else "",
-                    value_item.text() if value_item else "",
-                    addr_item.text() if addr_item else "",
+                    (type_item.text() if type_item else "").replace("\u200b", ""),
+                    (value_item.text() if value_item else "").replace("\u200b", ""),
+                    (addr_item.text() if addr_item else "").replace("\u200b", ""),
                 ]
             )
         return rows
@@ -1593,6 +1893,8 @@ class IoCNinjaWidget(QWidget):
             content_w = max(max_item_w + sb_w + padding_extra, title_row_required)
             # Add inner padding and account for larger layout margins
             padding = 32
+            # Ensure left title row and controls are never clipped
+            # Use computed content width without over-aggressive clamping
             min_w = content_w + padding
             self.left_panel.setMinimumWidth(min_w)
             # Also set initial splitter sizes so right side gets remaining space
@@ -1665,6 +1967,12 @@ class IoCNinjaWidget(QWidget):
     def _on_canceled(self):
         self.status_label.setText("Scan canceled")
         self._set_scanning(False)
+        # Reset progress bar to 0%
+        try:
+            self.progress.setMaximum(100)
+            self.progress.setValue(0)
+        except Exception:
+            pass
         # Restore default selection-themed chunk color
         try:
             self._set_progress_status(None)
@@ -1725,18 +2033,34 @@ class IoCNinjaWidget(QWidget):
         menu.exec(self.results_table.viewport().mapToGlobal(pos))
 
     def _init_column_sizes(self):
+        # Keep columns stretched to available width so horizontal scrollbars are unnecessary
         try:
             header = self.results_table.horizontalHeader()
-            # Temporarily set to ResizeToContents to compute widths
             for c in range(self.results_table.columnCount()):
-                header.setSectionResizeMode(c, QHeaderView.ResizeToContents)
-            self.results_table.resizeColumnsToContents()
-            # Restore interactive so user can adjust manually afterwards
-            for c in range(self.results_table.columnCount()):
-                header.setSectionResizeMode(c, QHeaderView.Interactive)
-            self._columns_sized = True
+                header.setSectionResizeMode(c, QHeaderView.Stretch)
         except Exception:
-            self._columns_sized = True
+            pass
+        self._columns_sized = True
+
+    def _on_results_item_clicked(self, item: QTableWidgetItem):
+        try:
+            col = item.column()
+            row = item.row()
+            if col == 1:
+                # Copy Value text (strip zero-width spaces) to clipboard
+                txt = item.text().replace("\u200b", "") if item else ""
+                from PySide6.QtWidgets import QApplication
+
+                QApplication.instance().clipboard().setText(txt)
+                try:
+                    self.status_label.setText("Copied value to clipboard")
+                except Exception:
+                    pass
+            elif col == 2:
+                # Jump to address (handles single or multiple)
+                self.goto_address_from_item(item)
+        except Exception:
+            pass
 
     def goto_address_from_item(self, item):
         # Navigate: if multiple addresses, prompt a small chooser

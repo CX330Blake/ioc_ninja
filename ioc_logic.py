@@ -93,7 +93,8 @@ IOC_PATTERNS = {
     "UnixPath": re.compile(r'\b/(?:[\w\-.]+/)*[\w\-.]+/?\b'),
     "Registry": re.compile(r'\bHKEY_[A-Z_]+\\[A-Za-z0-9_.\\]+\\?'),
     "UserAgent_hdr": re.compile(r'(?im)^\s*User-Agent:\s*([^\r\n]+)'),
-    "JWT": re.compile(r'\b[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\b'),
+    # JWT: use strict full-string regex as requested
+    "JWT": re.compile(r'^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$'),
     "AWS_AK": re.compile(r'\b(?:AKIA|ASIA)[0-9A-Z]{16}\b', re.IGNORECASE),
     "Google_API": re.compile(r'\bAIza[0-9A-Za-z\-_]{35}\b'),
     "OpenAI_SG": re.compile(r'\bsk-[0-9a-zA-Z]{32,}\b', re.IGNORECASE),
@@ -194,13 +195,23 @@ def match_iocs_in_string(
         if name not in allowed_types:
             continue
         try:
-            for m in regex.findall(s):
-                # findall may return tuples; normalize to string
-                if isinstance(m, tuple):
-                    m = m[0]
-                if m is None:
-                    continue
-                findings.setdefault(name, set()).add(m.strip() if isinstance(m, str) else str(m))
+            pat = regex.pattern if hasattr(regex, "pattern") else ""
+            # If a pattern is anchored (e.g., ^...$), scan candidate tokens and use fullmatch
+            if (name == "JWT") or (pat.startswith("^") and pat.endswith("$")):
+                # Split into tokens that contain only characters valid for the target class
+                # This avoids punctuation sticking to tokens and breaking fullmatch.
+                candidates = [t for t in re.split(r"[^A-Za-z0-9._-]+", s) if t]
+                for t in candidates:
+                    if regex.fullmatch(t):
+                        findings.setdefault(name, set()).add(t)
+            else:
+                for m in regex.findall(s):
+                    # findall may return tuples; normalize to string
+                    if isinstance(m, tuple):
+                        m = m[0]
+                    if m is None:
+                        continue
+                    findings.setdefault(name, set()).add(m.strip() if isinstance(m, str) else str(m))
         except re.error:
             # ignore faulty regex for this run
             continue
