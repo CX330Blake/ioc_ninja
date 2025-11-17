@@ -39,6 +39,20 @@ from . import ioc_logic
 from .tld_data import VALID_TLDS
 
 import platform
+# Register plugin settings with Binary Ninja so options appear in the application's Settings (user scope).
+try:
+    from binaryninja.settings import Settings as _BNSettings
+    from binaryninja import settings as _bn_settings_mod
+    from binaryninja.enums import SettingsScope as _SettingsScope
+    _bn_settings = _BNSettings()
+    # Create a top-level group for IoC Ninja and register the user-scoped boolean setting.
+    _bn_settings.register_group("iocninja", "IoC Ninja")
+    _bn_settings.register_setting(
+        "iocninja.resolvable_domains_only",
+        '{"title":"Resolvable domains only (DNS)", "description":"Resolve domains via DNS after scanning; filter out unresolvable domains.", "type":"boolean", "default": false, "ignore": ["SettingsProjectScope","SettingsResourceScope"]}'
+    )
+except Exception:
+    _bn_settings = None
 import socket
 import hashlib
 
@@ -92,38 +106,6 @@ class IoCCheckboxProxyStyle(QProxyStyle):
         return super().drawPrimitive(element, option, painter, widget)
 
 
-class SettingsDialog(QDialog):
-    """Simple settings window for IoC Ninja."""
-    def __init__(self, parent=None, resolvable_only: bool = False):
-        super().__init__(parent)
-        self.setWindowTitle("Settings")
-        try:
-            self.setModal(True)
-        except Exception:
-            pass
-        lay = QVBoxLayout(self)
-        self.chk_resolvable = QCheckBox("Resolvable domains only (DNS)")
-        try:
-            self.chk_resolvable.setChecked(bool(resolvable_only))
-            self.chk_resolvable.setToolTip(
-                "Resolve domains via DNS after scanning; filter out unresolvable domains."
-            )
-        except Exception:
-            pass
-        lay.addWidget(self.chk_resolvable)
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        try:
-            btns.accepted.connect(self.accept)
-            btns.rejected.connect(self.reject)
-        except Exception:
-            pass
-        lay.addWidget(btns)
-
-    def is_resolvable_only(self) -> bool:
-        try:
-            return bool(self.chk_resolvable.isChecked())
-        except Exception:
-            return False
 
 
 class IoCScanWorker(QObject):
@@ -447,8 +429,9 @@ class IoCNinjaWidget(QWidget):
         # Settings state
         self._resolvable_only = False
         try:
+            # Prefer Binary Ninja's Settings (user scope). Key registered as "iocninja.resolvable_domains_only".
             self._resolvable_only = self._load_setting_bool(
-                "resolvable_domains_only", False
+                "iocninja.resolvable_domains_only", False
             )
         except Exception:
             self._resolvable_only = False
@@ -872,13 +855,6 @@ class IoCNinjaWidget(QWidget):
         status.addWidget(self.progress)
         status.addWidget(self.status_label)
         status.addStretch(1)
-        # Settings button at bottom-right
-        try:
-            self.btn_settings = QPushButton("Settings")
-            self.btn_settings.clicked.connect(self._open_settings_dialog)
-            status.addWidget(self.btn_settings)
-        except Exception:
-            pass
 
         # Right side layout (controls + table + status)
         right = QWidget()
@@ -942,21 +918,77 @@ class IoCNinjaWidget(QWidget):
             pass
 
     def _open_settings_dialog(self):
-        """Open the settings dialog as a separate window and persist changes."""
+        """Open Binary Ninja's Settings UI focused on IoC Ninja if available.
+        If BN's UI is unavailable, show an informational dialog explaining where to find the setting.
+        """
         try:
-            dlg = SettingsDialog(self, resolvable_only=bool(self._resolvable_only))
-            # Make it application-modal to keep flow simple
-            dlg.setWindowModality(Qt.ApplicationModal)
-            if dlg.exec() == QDialog.Accepted:
-                new_val = bool(dlg.is_resolvable_only())
-                if new_val != self._resolvable_only:
-                    self._resolvable_only = new_val
-                    self._save_setting_bool("resolvable_domains_only", new_val)
+            # Try to open Binary Ninja's settings view if the UI binding exposes it.
+            try:
+                from binaryninjaui import SettingsView  # type: ignore
+                sv = SettingsView()
+                try:
+                    # Try to focus search/filter on our plugin group name if API available
+                    sv.setSearchFilter("iocninja")
+                except Exception:
+                    try:
+                        sv.focusSearch()
+                    except Exception:
+                        pass
+                sv.show()
+                return
+            except Exception:
+                pass
+
+            # Fallback: inform user where to find the setting in the application Settings
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "IoC Ninja Settings",
+                "IoC Ninja settings moved to Binary Ninja's Settings dialog under the 'IoC Ninja' group.\n\n"
+                "Open: Edit → Settings → Plugins → IoC Ninja",
+            )
         except Exception:
             pass
 
     def _load_setting_bool(self, key: str, default: bool = False) -> bool:
+        """Load a boolean setting. Prefer Binary Ninja Settings API (user scope), fall back to QSettings."""
         try:
+            # Prefer binaryninja.settings module API when available
+            try:
+                from binaryninja.settings import Settings as _SettingsClass  # type: ignore
+                from binaryninja.enums import SettingsScope as _SettingsScope  # type: ignore
+
+                s = _SettingsClass()
+                # get_bool_with_scope returns (value, scope)
+                try:
+                    val, _scope = s.get_bool_with_scope(key, resource=None, scope=_SettingsScope.SettingsUserScope)
+                    return bool(val)
+                except Exception:
+                    # Some BN builds expose get_bool instead; try module-level helper
+                    pass
+            except Exception:
+                pass
+
+            try:
+                from binaryninja import settings as _bn_settings_mod  # type: ignore
+                from binaryninja.enums import SettingsScope as _SettingsScope  # type: ignore
+                try:
+                    v = _bn_settings_mod.get_bool_with_scope(key, None, _SettingsScope.SettingsUserScope)
+                    # Some module helpers may return a tuple; normalize
+                    if isinstance(v, tuple):
+                        return bool(v[0])
+                    return bool(v)
+                except Exception:
+                    # Try direct get without scope
+                    try:
+                        return bool(_bn_settings_mod.get_bool(key))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Fallback: QSettings for backward compatibility
             s = QSettings("IoCNinja", "IoCNinja")
             v = s.value(key, defaultValue=default)
             if isinstance(v, bool):
@@ -966,7 +998,26 @@ class IoCNinjaWidget(QWidget):
             return default
 
     def _save_setting_bool(self, key: str, value: bool):
+        """Save a boolean setting. Prefer Binary Ninja Settings API (user scope), fall back to QSettings."""
         try:
+            try:
+                from binaryninja import settings as _bn_settings_mod  # type: ignore
+                from binaryninja.enums import SettingsScope as _SettingsScope  # type: ignore
+                try:
+                    # Module-level helper
+                    _bn_settings_mod.set_setting_value(key, bool(value), _SettingsScope.SettingsUserScope)
+                    return
+                except Exception:
+                    pass
+                try:
+                    s = _bn_settings_mod.Settings()
+                    s.set_setting_value(key, bool(value), _SettingsScope.SettingsUserScope)
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Fallback to local QSettings
             s = QSettings("IoCNinja", "IoCNinja")
             s.setValue(key, bool(value))
         except Exception:
