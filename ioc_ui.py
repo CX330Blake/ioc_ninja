@@ -29,17 +29,17 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
     QStyle,
     QProxyStyle,
+    QDialog,
+    QDialogButtonBox,
 )
-from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent
+from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent, QSettings
 import os
 
 from . import ioc_logic
 from .tld_data import VALID_TLDS
 
-import subprocess
 import platform
 import socket
-import shutil
 import hashlib
 
 
@@ -92,6 +92,40 @@ class IoCCheckboxProxyStyle(QProxyStyle):
         return super().drawPrimitive(element, option, painter, widget)
 
 
+class SettingsDialog(QDialog):
+    """Simple settings window for IoC Ninja."""
+    def __init__(self, parent=None, resolvable_only: bool = False):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        try:
+            self.setModal(True)
+        except Exception:
+            pass
+        lay = QVBoxLayout(self)
+        self.chk_resolvable = QCheckBox("Resolvable domains only (DNS)")
+        try:
+            self.chk_resolvable.setChecked(bool(resolvable_only))
+            self.chk_resolvable.setToolTip(
+                "Resolve domains via DNS after scanning; filter out unresolvable domains."
+            )
+        except Exception:
+            pass
+        lay.addWidget(self.chk_resolvable)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        try:
+            btns.accepted.connect(self.accept)
+            btns.rejected.connect(self.reject)
+        except Exception:
+            pass
+        lay.addWidget(btns)
+
+    def is_resolvable_only(self) -> bool:
+        try:
+            return bool(self.chk_resolvable.isChecked())
+        except Exception:
+            return False
+
+
 class IoCScanWorker(QObject):
     """Background worker to scan strings with progress and cancel."""
 
@@ -101,10 +135,11 @@ class IoCScanWorker(QObject):
     failed = Signal(str)
     canceled = Signal()
 
-    def __init__(self, bv: BinaryView, patterns):
+    def __init__(self, bv: BinaryView, patterns, filter_live_domains: bool = False):
         super().__init__()
         self.bv = bv
         self.patterns = patterns
+        self.filter_live_domains = bool(filter_live_domains)
         self._cancel = False
         self._domain_cache = {}
         self._changed_keys = set()
@@ -185,6 +220,14 @@ class IoCScanWorker(QObject):
                         except Exception:
                             pass
             processed = 0
+            # Throttle progress updates for smoother, linear growth without UI spam
+            last_prog_ts = start
+            last_prog_count = 0
+            PROG_MIN_INTERVAL = 0.03  # seconds between progress signals (~30 FPS)
+            PROG_MIN_STEP = 5         # or every N items, whichever first
+            # When live domain filtering is enabled, defer network checks and suppress domain partials
+            pending_domains: dict[tuple, set] = {}
+            domains_to_check: set[str] = set()
             for addr, s in strings:
                 if self._cancel:
                     self.canceled.emit()
@@ -195,11 +238,24 @@ class IoCScanWorker(QObject):
                     for k, vals in matches.items():
                         for v in vals:
                             # Validate domain TLD before any network checks
-                            if k == "Domain" and not self._tld_is_valid(v):
-                                continue
-                            # Filter domain by ping reachability before output
-                            if k == "Domain" and not self._domain_is_alive(v):
-                                continue
+                            if k == "Domain":
+                                if not self._tld_is_valid(v):
+                                    continue
+                                if self.filter_live_domains:
+                                    dkey = v.strip().lower()
+                                    domains_to_check.add(dkey)
+                                    addr_str_pd = (
+                                        hex(addr) if isinstance(addr, int) else "N/A"
+                                    )
+                                    pending_domains.setdefault((k, v), set()).add(
+                                        addr_str_pd
+                                    )
+                                    # Skip adding to agg now; we'll add alive domains later
+                                    continue
+                                else:
+                                    # Without live filtering: keep previous fast behavior (DNS only)
+                                    if not self._domain_resolves(v):
+                                        continue
                             addr_str = hex(addr) if isinstance(addr, int) else "N/A"
                             key = (k, v)
                             bucket = agg.get(key)
@@ -220,6 +276,9 @@ class IoCScanWorker(QObject):
                         for ioc_type, value in sorted(
                             self._changed_keys, key=lambda x: (x[0], x[1])
                         ):
+                            # Suppress domain partials when filter_live_domains is True
+                            if self.filter_live_domains and ioc_type == "Domain":
+                                continue
                             addrs = agg.get((ioc_type, value), set())
                             numeric_addrs = sorted(
                                 [a for a in addrs if a != "N/A"],
@@ -231,7 +290,77 @@ class IoCScanWorker(QObject):
                             partial_rows.append((ioc_type, value, addr_join))
                         self.partial.emit(partial_rows)
                         self._changed_keys.clear()
+                # Emit progress more frequently for smoother bar growth
+                now = time.time()
+                if (
+                    (now - last_prog_ts) >= PROG_MIN_INTERVAL
+                    or (processed - last_prog_count) >= PROG_MIN_STEP
+                    or processed == total
+                ):
                     self.progress.emit(processed, total)
+                    last_prog_ts = now
+                    last_prog_count = processed
+            # If live filtering is requested, process domains concurrently and then merge those deemed alive
+            if self.filter_live_domains and domains_to_check:
+                try:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                    max_workers = min(8, max(2, (os.cpu_count() or 2)))
+                    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                        fut_map = {
+                            pool.submit(self._domain_resolves, d): d
+                            for d in domains_to_check
+                        }
+                        for fut in as_completed(fut_map):
+                            if self._cancel:
+                                self.canceled.emit()
+                                return
+                            d = fut_map[fut]
+                            ok = False
+                            try:
+                                ok = bool(fut.result())
+                            except Exception:
+                                ok = False
+                            if ok:
+                                # Merge any pending records for this domain
+                                for (k, v), addrs in list(pending_domains.items()):
+                                    if v.strip().lower() == d:
+                                        b = agg.setdefault((k, v), set())
+                                        before = len(b)
+                                        b.update(addrs)
+                                        if len(b) != before:
+                                            self._changed_keys.add((k, v))
+                                        del pending_domains[(k, v)]
+                except Exception:
+                    # Fallback sequential
+                    for d in list(domains_to_check):
+                        if self._cancel:
+                            self.canceled.emit()
+                            return
+                        if self._domain_resolves(d):
+                            for (k, v), addrs in list(pending_domains.items()):
+                                if v.strip().lower() == d:
+                                    b = agg.setdefault((k, v), set())
+                                    b.update(addrs)
+                                    self._changed_keys.add((k, v))
+                                    del pending_domains[(k, v)]
+                # Emit a final partial for domains now added
+                if self._changed_keys:
+                    partial_rows = []
+                    for ioc_type, value in sorted(
+                        self._changed_keys, key=lambda x: (x[0], x[1])
+                    ):
+                        addrs = agg.get((ioc_type, value), set())
+                        numeric_addrs = sorted(
+                            [a for a in addrs if a != "N/A"], key=lambda x: int(x, 16)
+                        )
+                        if "N/A" in addrs:
+                            numeric_addrs.append("N/A")
+                        addr_join = ", ".join(numeric_addrs)
+                        partial_rows.append((ioc_type, value, addr_join))
+                    if partial_rows:
+                        self.partial.emit(partial_rows)
+                        self._changed_keys.clear()
             # Flatten aggregated map into list of rows with combined addresses
             results = []
             for (ioc_type, value), addrs in agg.items():
@@ -250,11 +379,10 @@ class IoCScanWorker(QObject):
         except Exception as e:
             self.failed.emit(str(e))
 
-    def _domain_is_alive(self, domain: str) -> bool:
-        """Best-effort ping check with caching and sane timeouts.
-        - Try system ping with count=1 and process timeout.
-        - Fallback to TCP connect on port 80 with short timeout.
-        - Cache results to avoid repeated checks.
+    def _domain_resolves(self, domain: str) -> bool:
+        """Fast DNS reachability check with caching.
+        Returns True if the domain resolves to at least one address via getaddrinfo/gethostbyname.
+        Does not perform ICMP ping or TCP connect.
         """
         # Normalize domain key
         key = domain.strip().lower()
@@ -263,30 +391,18 @@ class IoCScanWorker(QObject):
 
         alive = False
         try:
-            sysname = platform.system()
-            ping_path = shutil.which("ping")
-            if ping_path:
-                if sysname == "Windows":
-                    cmd = [ping_path, "-n", "1", key]
-                else:
-                    cmd = [ping_path, "-c", "1", key]
-                try:
-                    # Use process timeout to bound execution time
-                    res = subprocess.run(
-                        cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=1.5,
-                        check=False,
-                    )
-                    alive = res.returncode == 0
-                except subprocess.TimeoutExpired:
-                    alive = False
-            # Fallback to TCP connect if ping missing or failed
+            # Try DNS resolution via getaddrinfo
+            try:
+                infos = socket.getaddrinfo(key, None)
+                if infos:
+                    alive = True
+            except Exception:
+                alive = False
+            # Fallback: gethostbyname_ex
             if not alive:
                 try:
-                    with socket.create_connection((key, 80), timeout=1.0):
-                        alive = True
+                    _h, _a, addrs = socket.gethostbyname_ex(key)
+                    alive = bool(addrs)
                 except Exception:
                     alive = False
         except Exception:
@@ -325,6 +441,17 @@ class IoCNinjaWidget(QWidget):
             self._checkbox_style = None
         # Binary selection state
         self._bvs_by_name: dict[str, BinaryView] = {}
+        self._binary_name_max_chars = (
+            24  # max chars to display in combo before ascii "..." elide
+        )
+        # Settings state
+        self._resolvable_only = False
+        try:
+            self._resolvable_only = self._load_setting_bool(
+                "resolvable_domains_only", False
+            )
+        except Exception:
+            self._resolvable_only = False
 
         # Display name overrides for IoC types
         self._type_display = {
@@ -333,7 +460,9 @@ class IoCNinjaWidget(QWidget):
         }
 
         # Soft-wrap configuration for long, unbroken strings in the Value column
-        self._wrap_run_length = 16  # insert zero-width space every N chars when no natural breaks
+        self._wrap_run_length = (
+            16  # insert zero-width space every N chars when no natural breaks
+        )
 
         # Left panel: IoC type filters (categorized) as a two-column tree: [checkbox][name]
         self.ioc_tree = QTreeWidget()
@@ -513,7 +642,7 @@ class IoCNinjaWidget(QWidget):
         # Left side: title + scrollable checkbox list
         self.left_panel = QWidget()
         self.left_layout = QVBoxLayout()
-        self.left_title = QLabel("IoC Types")
+        self.left_title = QLabel("🥷 IoC Ninja")
         # Make the IoC Types title larger and bold
         try:
             title_font = QFont(self.font())
@@ -708,7 +837,9 @@ class IoCNinjaWidget(QWidget):
             pass
         self.results_table.verticalHeader().setVisible(False)
         try:
-            self.results_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+            self.results_table.verticalHeader().setSectionResizeMode(
+                QHeaderView.ResizeToContents
+            )
         except Exception:
             pass
         self.results_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -741,6 +872,13 @@ class IoCNinjaWidget(QWidget):
         status.addWidget(self.progress)
         status.addWidget(self.status_label)
         status.addStretch(1)
+        # Settings button at bottom-right
+        try:
+            self.btn_settings = QPushButton("Settings")
+            self.btn_settings.clicked.connect(self._open_settings_dialog)
+            status.addWidget(self.btn_settings)
+        except Exception:
+            pass
 
         # Right side layout (controls + table + status)
         right = QWidget()
@@ -803,12 +941,44 @@ class IoCNinjaWidget(QWidget):
         except Exception:
             pass
 
+    def _open_settings_dialog(self):
+        """Open the settings dialog as a separate window and persist changes."""
+        try:
+            dlg = SettingsDialog(self, resolvable_only=bool(self._resolvable_only))
+            # Make it application-modal to keep flow simple
+            dlg.setWindowModality(Qt.ApplicationModal)
+            if dlg.exec() == QDialog.Accepted:
+                new_val = bool(dlg.is_resolvable_only())
+                if new_val != self._resolvable_only:
+                    self._resolvable_only = new_val
+                    self._save_setting_bool("resolvable_domains_only", new_val)
+        except Exception:
+            pass
+
+    def _load_setting_bool(self, key: str, default: bool = False) -> bool:
+        try:
+            s = QSettings("IoCNinja", "IoCNinja")
+            v = s.value(key, defaultValue=default)
+            if isinstance(v, bool):
+                return v
+            return str(v).lower() in ("1", "true", "yes", "on")
+        except Exception:
+            return default
+
+    def _save_setting_bool(self, key: str, value: bool):
+        try:
+            s = QSettings("IoCNinja", "IoCNinja")
+            s.setValue(key, bool(value))
+        except Exception:
+            pass
+
     def _setup_binary_selector(self):
         """Populate the binary selector with available BinaryViews (best effort).
         Defaults to the current BinaryView; tries to discover others via UI context if available.
         """
         self.binary_selector.clear()
         self._bvs_by_name.clear()
+
         # Always include current view
         def _bv_display_name(bv: BinaryView) -> str:
             try:
@@ -866,7 +1036,11 @@ class IoCNinjaWidget(QWidget):
                                 frames = []
                     for vf in frames:
                         bv = None
-                        for bv_meth in ("getCurrentBinaryView", "binaryView", "getBinaryView"):
+                        for bv_meth in (
+                            "getCurrentBinaryView",
+                            "binaryView",
+                            "getBinaryView",
+                        ):
                             try:
                                 attr = getattr(vf, bv_meth)
                                 bv = attr() if callable(attr) else attr
@@ -891,7 +1065,11 @@ class IoCNinjaWidget(QWidget):
                         try:
                             for obj in tlw.findChildren(object):
                                 bv = None
-                                for bv_attr in ("binaryView", "getBinaryView", "getCurrentBinaryView"):
+                                for bv_attr in (
+                                    "binaryView",
+                                    "getBinaryView",
+                                    "getCurrentBinaryView",
+                                ):
                                     try:
                                         attr = getattr(obj, bv_attr, None)
                                         if callable(attr):
@@ -913,14 +1091,16 @@ class IoCNinjaWidget(QWidget):
 
             seen = set()
             for disp, bv in names:
-                key = f"{disp}"
+                # Apply ASCII middle ellipsis for long names
+                shown = self._ellipsize_middle_ascii(disp, self._binary_name_max_chars)
+                key = f"{shown}"
                 if key in seen:
                     # Disambiguate duplicates
                     idx = 2
-                    new_key = f"{disp} ({idx})"
+                    new_key = f"{shown} ({idx})"
                     while new_key in seen:
                         idx += 1
-                        new_key = f"{disp} ({idx})"
+                        new_key = f"{shown} ({idx})"
                     key = new_key
                 seen.add(key)
                 self._bvs_by_name[key] = bv
@@ -975,6 +1155,25 @@ class IoCNinjaWidget(QWidget):
         except Exception:
             pass
 
+    def _ellipsize_middle_ascii(self, s: str, max_len: int) -> str:
+        """Return an ASCII middle-ellipsized string using "..." when length exceeds max_len.
+        Keeps head and tail segments; ensures total length <= max_len.
+        """
+        try:
+            if not s or len(s) <= max_len or max_len <= 3:
+                return s
+            # Compute head/tail lengths
+            rem = max_len - 3
+            head = rem // 2
+            tail = rem - head
+            if head < 1:
+                head = 1
+            if tail < 1:
+                tail = 1
+            return s[:head] + "..." + s[-tail:]
+        except Exception:
+            return s
+
     # Tree-based handlers removed after redesign to table-based selector
 
     def closeEvent(self, event):
@@ -1021,8 +1220,9 @@ class IoCNinjaWidget(QWidget):
         has_rows = self.results_table.rowCount() > 0
         self.btn_export.setEnabled(not scanning and has_rows)
         if scanning:
-            # Set to busy until we get the first progress event (which sets max/value)
-            self.progress.setMaximum(0)
+            # Determinate from the start: avoid busy animation chunk jumping
+            self.progress.setMaximum(100)
+            self.progress.setValue(0)
         else:
             # Determinate mode; caller should set final value explicitly
             self.progress.setMaximum(100)
@@ -1040,7 +1240,11 @@ class IoCNinjaWidget(QWidget):
         self._start_time = time.time()
 
         self._thread = QThread(self)
-        self._worker = IoCScanWorker(self.bv, patterns)
+        self._worker = IoCScanWorker(
+            self.bv,
+            patterns,
+            filter_live_domains=bool(getattr(self, "_resolvable_only", False)),
+        )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self._on_progress)
@@ -1190,8 +1394,7 @@ class IoCNinjaWidget(QWidget):
             pass
 
     def _set_progress_status(self, success: bool | None):
-        """Keep border using CommentColor; chunk uses button color; background uses pane/base.
-        """
+        """Keep border using CommentColor; chunk uses button color; background uses pane/base."""
         outline = self._theme_color("CommentColor")
         self._progress_chunk_color = self._button_color()
         self._apply_progress_style(outline, self._progress_chunk_color)
@@ -1560,7 +1763,9 @@ class IoCNinjaWidget(QWidget):
         """
         try:
             # Use an enabled button's color as the reference (Scan is enabled when idle)
-            ref_pal = self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            ref_pal = (
+                self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            )
             btn_col = ref_pal.color(QPalette.Button)
             rgb = self._qcolor_css(btn_col)
             css = (
@@ -1578,7 +1783,9 @@ class IoCNinjaWidget(QWidget):
         Does not alter other buttons or other states.
         """
         try:
-            ref_pal = self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            ref_pal = (
+                self.btn_scan.palette() if hasattr(self, "btn_scan") else self.palette()
+            )
             btn_col = ref_pal.color(QPalette.Button)
             rgb = self._qcolor_css(btn_col)
             css = (
