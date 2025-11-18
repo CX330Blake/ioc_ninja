@@ -1,29 +1,42 @@
 {
     "pluginmetadataversion": 2,
     "name": "IoC Ninja",
-    "type": ["ui", "core", "binaryview", "helper"],
-    "api": ["python3"],
+    "type": [
+        "ui",
+        "core",
+        "binaryview",
+        "helper"
+    ],
+    "api": [
+        "python3"
+    ],
     "description": "IoC Ninja is a Binary Ninja plugin that can improve the QoL of malware analysts.",
-    "longdescription": "# IoC Ninja\n\nIoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible strings and extracts Indicators of Compromise (IoCs) — IP addresses, domains, URLs, email addresses, API keys, hashes, PEM blocks, Base64 blocks, file paths, registry keys and other useful artifacts. Findings are presented in an interactive Qt UI with selectable detectors, incremental results, live-domain filtering, and CSV export.\n\n**Why this is useful**\n\n- Quickly surface potential IoCs embedded in binaries without writing custom extraction scripts.\n- A large, curated set of regular expressions and heuristics for many IoC classes (see `ioc_logic.py`).\n- Optional DNS-based live-domain filtering to reduce false positives.\n- Background scanning with incremental UI updates and exportable CSV output for triage.\n\n## Features\n\n- Pattern-based detection for IPv4/IPv6, domains, URLs, emails, UUIDs, MACs, MD5/SHA hashes, JWTs, API keys, PEM blocks, Base64 blocks, file paths, registry keys and more.\n- Heuristic checks: high-entropy tokens, base64 decode validation and file-hash extraction.\n- GUI: choose detectors, run scans in background, view incremental and aggregated results, export to CSV.\n- Live DNS filtering: optionally show only resolvable domains.\n\n## Requirements\n\n- Binary Ninja (minimum version referenced in `plugin.json`: 3164)\n- Python 3 (Binary Ninja's bundled Python is recommended)\n- The plugin uses the Binary Ninja API and PySide6; these are typically supplied by the Binary Ninja application.\n\n## Installation\n\n1. Clone the repository and put `ioc_ninja` inside your Binary Ninja `plugins` directory.\n\n    - MacOS: `~/Library/Application Support/Binary Ninja/plugins/`\n    - Linux: `~/.binaryninja/plugins/`\n    - Windows: `%APPDATA%\\\\Binary Ninja\\\\plugins/`\n\n2. Restart Binary Ninja to load the plugin.\n\n## Usage\n\n1. Open a binary in Binary Ninja.\n2. Open the plugin UI: `Plugins -> IoC Ninja` (or use the command palette).\n3. Select IoC types to scan (or use the All/None shortcuts) and click `Scan`.\n4. Watch progress and partial results in the UI. Use the search box to filter by Type, Value, or Address.\n5. Export results using the `Export` button (CSV) for further triage.\n\n## Developer & Testing\n\n- Core logic: `ioc_ninja/core/ioc_logic.py`\n- UI: `ioc_ninja/ui/ioc_ui.py`\n- Compatibility shim for legacy imports: `ioc_ninja/logic/ioc_logic.py`\n- Tests: `tests/test_ioc_regex.py` (mocks Binary Ninja internals so tests can run outside the host application).\n\nRun unit tests locally (Python 3 required):\n\n```bash\npython3 -m pytest tests/test_ioc_regex.py\n# or (tests include a small runner):\npython3 tests/test_ioc_regex.py\n```\n\nWhen adding or changing detectors, please add/update tests in `tests/test_ioc_regex.py` to cover edge cases.\n\n## Getting Help\n\n- Open an issue in this repository for bugs or feature requests. Include: Binary Ninja version, small repro if possible, and steps to reproduce.\n- For quick questions, code pointers, or to propose changes, open a discussion or PR.\n\n## Contributing & Maintainers\n\n- This project is maintained in this repository. See `LICENSE` for license details (MIT).\n- Contributions are welcome via pull requests — for larger changes, open an issue first to discuss the approach.\n\n## License\n\nThis project is licensed under the MIT License — see `LICENSE` for details.\n",
+    "longdescription": "# IoC Ninja\n\nIoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible strings and extracts Indicators of Compromise (IoCs) \u2014 IP addresses, domains, URLs, email addresses, API keys, hashes, PEM blocks, Base64 blocks, file paths, registry keys and other useful artifacts. Findings are presented in an interactive Qt UI with selectable detectors, incremental results, live-domain filtering, and CSV export.\n\n**Why this is useful**\n\n- Quickly surface potential IoCs embedded in binaries without writing custom extraction scripts.\n- A large, curated set of regular expressions and heuristics for many IoC classes (see `ioc_logic.py`).\n- Optional DNS-based live-domain filtering to reduce false positives.\n- Background scanning with incremental UI updates and exportable CSV output for triage.\n\n## Features\n\n- Pattern-based detection for IPv4/IPv6, domains, URLs, emails, UUIDs, MACs, MD5/SHA hashes, JWTs, API keys, PEM blocks, Base64 blocks, file paths, registry keys and more.\n- Heuristic checks: high-entropy tokens, base64 decode validation and file-hash extraction.\n- GUI: choose detectors, run scans in background, view incremental and aggregated results, export to CSV.\n- Live DNS filtering: optionally show only resolvable domains.\n\n## Requirements\n\n- Binary Ninja (minimum version referenced in `plugin.json`: 3164)\n- Python 3 (Binary Ninja's bundled Python is recommended)\n- The plugin uses the Binary Ninja API and PySide6; these are typically supplied by the Binary Ninja application.\n\n## Installation\n\n1. Clone the repository and put `ioc_ninja` inside your Binary Ninja `plugins` directory.\n\n    - MacOS: `~/Library/Application Support/Binary Ninja/plugins/`\n    - Linux: `~/.binaryninja/plugins/`\n    - Windows: `%APPDATA%\\\\Binary Ninja\\\\plugins/`\n\n2. Restart Binary Ninja to load the plugin.\n\n## Usage\n\n1. Open a binary in Binary Ninja.\n2. Open the plugin UI: `Plugins -> IoC Ninja` (or use the command palette).\n3. Select IoC types to scan (or use the All/None shortcuts) and click `Scan`.\n4. Watch progress and partial results in the UI. Use the search box to filter by Type, Value, or Address.\n5. Export results using the `Export` button (CSV) for further triage.\n\n## Developer & Testing\n\n- Core logic: `ioc_ninja/core/ioc_logic.py`\n- UI: `ioc_ninja/ui/ioc_ui.py`\n- Compatibility shim for legacy imports: `ioc_ninja/logic/ioc_logic.py`\n- Tests: `tests/test_ioc_regex.py` (mocks Binary Ninja internals so tests can run outside the host application).\n\nRun unit tests locally (Python 3 required):\n\n```bash\npython3 -m pytest tests/test_ioc_regex.py\n# or (tests include a small runner):\npython3 tests/test_ioc_regex.py\n```\n\nWhen adding or changing detectors, please add/update tests in `tests/test_ioc_regex.py` to cover edge cases.\n\n## Getting Help\n\n- Open an issue in this repository for bugs or feature requests. Include: Binary Ninja version, small repro if possible, and steps to reproduce.\n- For quick questions, code pointers, or to propose changes, open a discussion or PR.\n\n## Contributing & Maintainers\n\n- This project is maintained in this repository. See `LICENSE` for license details (MIT).\n- Contributions are welcome via pull requests \u2014 for larger changes, open an issue first to discuss the approach.\n\n## License\n\nThis project is licensed under the MIT License \u2014 see `LICENSE` for details.\n",
     "license": {
         "name": "MIT",
         "text": "Copyright (c) 2025 CX330\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE."
     },
-    "platforms": ["Darwin", "Linux", "Windows"],
+    "platforms": [
+        "Darwin",
+        "Linux",
+        "Windows"
+    ],
     "installinstructions": {
         "Darwin": "Clone this repository and put the `ioc_ninja` directory into: ~/Library/Application Support/Binary Ninja/plugins/ then restart Binary Ninja.",
         "Linux": "Clone this repository and put the `ioc_ninja` directory into: ~/.binaryninja/plugins/ then restart Binary Ninja.",
         "Windows": "Clone this repository and put the `ioc_ninja` directory into: %APPDATA%\\\\Binary Ninja\\\\plugins/ then restart Binary Ninja."
     },
     "dependencies": {
-        "pip": ["PySide6"],
+        "pip": [
+            "PySide6"
+        ],
         "apt": [],
         "installers": [],
         "other": [
             "The plugin requires the Binary Ninja host application (provides the Binary Ninja API)."
         ]
     },
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "CX330",
     "minimumbinaryninjaversion": 3164,
     "repository": "https://github.com/CX330Blake/ioc_ninja"

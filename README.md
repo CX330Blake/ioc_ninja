@@ -1,9 +1,11 @@
+# IoC Ninja (v0.1.1)
+Author: **CX330**
+
+_IoC Ninja is a Binary Ninja plugin that can improve the QoL of malware analysts._
+
+## Description:
+
 # IoC Ninja
-
-![version](https://img.shields.io/badge/version-1.3.5-blue)
-![license](https://img.shields.io/badge/license-MIT-green)
-
-![](https://github-production-user-asset-6210df.s3.amazonaws.com/108129644/515628109-1aecaec7-1e09-44b6-ada1-0bf0d6474019.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20251118%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20251118T145744Z&X-Amz-Expires=300&X-Amz-Signature=79f206e03dd2c3a16cfa5a79c7fbbd582b3af09fe5a1f6ae8ffcb96f23760e0b&X-Amz-SignedHeaders=host)
 
 IoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible strings and extracts Indicators of Compromise (IoCs) — IP addresses, domains, URLs, email addresses, API keys, hashes, PEM blocks, Base64 blocks, file paths, registry keys and other useful artifacts. Findings are presented in an interactive Qt UI with selectable detectors, incremental results, live-domain filtering, and CSV export.
 
@@ -29,19 +31,15 @@ IoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible string
 
 ## Installation
 
-You can install this manually or in Binary Ninja Plugin Manager. To install it manually, you can follow the instructions.
-
 1. Clone the repository and put `ioc_ninja` inside your Binary Ninja `plugins` directory.
 
     - MacOS: `~/Library/Application Support/Binary Ninja/plugins/`
     - Linux: `~/.binaryninja/plugins/`
-    - Windows: `%APPDATA%\Binary Ninja\plugins/`
+    - Windows: `%APPDATA%\\Binary Ninja\\plugins/`
 
 2. Restart Binary Ninja to load the plugin.
 
 ## Usage
-
-> You can modify the settings in Binary Ninja's settings page.
 
 1. Open a binary in Binary Ninja.
 2. Open the plugin UI: `Plugins -> IoC Ninja` (or use the command palette).
@@ -79,3 +77,44 @@ When adding or changing detectors, please add/update tests in `tests/test_ioc_re
 ## License
 
 This project is licensed under the MIT License — see `LICENSE` for details.
+
+
+
+## Installation Instructions
+
+### Darwin
+
+Clone this repository and put the `ioc_ninja` directory into: ~/Library/Application Support/Binary Ninja/plugins/ then restart Binary Ninja.
+
+### Linux
+
+Clone this repository and put the `ioc_ninja` directory into: ~/.binaryninja/plugins/ then restart Binary Ninja.
+
+### Windows
+
+Clone this repository and put the `ioc_ninja` directory into: %APPDATA%\\Binary Ninja\\plugins/ then restart Binary Ninja.
+
+## Minimum Version
+
+This plugin requires the following minimum version of Binary Ninja:
+
+* 3164
+
+
+
+## Required Dependencies
+
+The following dependencies are required for this plugin:
+
+ * pip - PySide6
+ * apt - 
+ * installers - 
+ * other - The plugin requires the Binary Ninja host application (provides the Binary Ninja API).
+
+
+## License
+
+This plugin is released under a MIT license.
+## Metadata Version
+
+2
