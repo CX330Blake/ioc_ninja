@@ -198,7 +198,12 @@ class IoCScanWorker(QObject):
                                     ).add("N/A")
                         except Exception:
                             pass
-            processed = 0
+            # Track two counts:
+            # - scanned: number of strings processed (used for finished() scanned_count)
+            # - processed_steps: progress steps including DNS checks (used to update progress bar)
+            scanned = 0
+            processed_steps = 0
+            total_steps = total  # will be increased if we have DNS checks to perform
             # Throttle progress updates for smoother, linear growth without UI spam
             last_prog_ts = start
             last_prog_count = 0
@@ -248,16 +253,28 @@ class IoCScanWorker(QObject):
                 except Exception:
                     # keep scanning despite individual failures
                     pass
-                processed += 1
-                if processed % 100 == 0 or processed == total:
+
+                # update counters
+                scanned += 1
+                processed_steps += 1
+
+                # Emit partials periodically (based on scanned strings)
+                if scanned % 100 == 0 or scanned == total:
                     if self._changed_keys:
                         partial_rows = []
                         for ioc_type, value in sorted(
                             self._changed_keys, key=lambda x: (x[0], x[1])
                         ):
-                            # Suppress domain partials when filter_live_domains is True
+                            # For Domain entries when live filtering is enabled, show a temporary
+                            # "checking..." placeholder if the domain is still pending DNS checks.
                             if self.filter_live_domains and ioc_type == "Domain":
-                                continue
+                                addrs = agg.get((ioc_type, value), set())
+                                if not addrs:
+                                    # Domain seen but not yet merged (pending); surface a placeholder row
+                                    partial_rows.append((ioc_type, value, "checking..."))
+                                    continue
+                                # otherwise fall through and render resolved addresses as usual
+
                             addrs = agg.get((ioc_type, value), set())
                             numeric_addrs = sorted(
                                 [a for a in addrs if a != "N/A"],
@@ -267,21 +284,31 @@ class IoCScanWorker(QObject):
                                 numeric_addrs.append("N/A")
                             addr_join = ", ".join(numeric_addrs)
                             partial_rows.append((ioc_type, value, addr_join))
-                        self.partial.emit(partial_rows)
+                        if partial_rows:
+                            self.partial.emit(partial_rows)
                         self._changed_keys.clear()
+
                 # Emit progress more frequently for smoother bar growth
                 now = time.time()
                 if (
                     (now - last_prog_ts) >= PROG_MIN_INTERVAL
-                    or (processed - last_prog_count) >= PROG_MIN_STEP
-                    or processed == total
+                    or (processed_steps - last_prog_count) >= PROG_MIN_STEP
+                    or scanned == total
                 ):
-                    self.progress.emit(processed, total)
+                    # Use total_steps (may be expanded later to include DNS checks)
+                    self.progress.emit(processed_steps, total_steps)
                     last_prog_ts = now
-                    last_prog_count = processed
+                    last_prog_count = processed_steps
+
             # If live filtering is requested, process domains concurrently and then merge those deemed alive
             if self.filter_live_domains and domains_to_check:
                 try:
+                    # expand total_steps to include DNS checks so the progress bar won't reach 100%
+                    dns_total = len(domains_to_check)
+                    total_steps = total + dns_total
+                    # inform UI of expanded total
+                    self.progress.emit(processed_steps, total_steps)
+
                     from concurrent.futures import ThreadPoolExecutor, as_completed
 
                     max_workers = min(8, max(2, (os.cpu_count() or 2)))
@@ -300,6 +327,10 @@ class IoCScanWorker(QObject):
                                 ok = bool(fut.result())
                             except Exception:
                                 ok = False
+                            # one DNS check completed -> advance progress
+                            processed_steps += 1
+                            self.progress.emit(processed_steps, total_steps)
+
                             if ok:
                                 # Merge any pending records for this domain
                                 for (k, v), addrs in list(pending_domains.items()):
@@ -316,7 +347,15 @@ class IoCScanWorker(QObject):
                         if self._cancel:
                             self.canceled.emit()
                             return
-                        if self._domain_resolves(d):
+                        ok = False
+                        try:
+                            ok = bool(self._domain_resolves(d))
+                        except Exception:
+                            ok = False
+                        # advance progress after each sequential check
+                        processed_steps += 1
+                        self.progress.emit(processed_steps, total_steps)
+                        if ok:
                             for (k, v), addrs in list(pending_domains.items()):
                                 if v.strip().lower() == d:
                                     b = agg.setdefault((k, v), set())
@@ -354,7 +393,8 @@ class IoCScanWorker(QObject):
             # Stable sort by Type then Value for nicer UX
             results.sort(key=lambda r: (r[0], r[1]))
             elapsed = time.time() - start
-            self.finished.emit(results, processed, elapsed)
+            # second parameter is scanned string count
+            self.finished.emit(results, scanned, elapsed)
         except Exception as e:
             self.failed.emit(str(e))
 
