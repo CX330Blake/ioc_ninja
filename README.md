@@ -1,11 +1,7 @@
-# IoC Ninja (v0.1.1)
+# IoC Ninja (v0.1.3)
 Author: **CX330**
 
-_IoC Ninja is a Binary Ninja plugin that can improve the QoL of malware analysts._
-
-## Description:
-
-# IoC Ninja
+_![IoC Ninja](https://github-production-user-asset-6210df.s3.amazonaws.com/108129644/515628109-1aecaec7-1e09-44b6-ada1-0bf0d6474019.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20251118%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20251118T210546Z&X-Amz-Expires=300&X-Amz-Signature=d570975b39fce9ebe0cf39144cf2a0b092af174b21b22e0c186b7b408ceee6b7&X-Amz-SignedHeaders=host)
 
 IoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible strings and extracts Indicators of Compromise (IoCs) — IP addresses, domains, URLs, email addresses, API keys, hashes, PEM blocks, Base64 blocks, file paths, registry keys and other useful artifacts. Findings are presented in an interactive Qt UI with selectable detectors, incremental results, live-domain filtering, and CSV export.
 
@@ -15,6 +11,10 @@ IoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible string
 - A large, curated set of regular expressions and heuristics for many IoC classes (see `ioc_logic.py`).
 - Optional DNS-based live-domain filtering to reduce false positives.
 - Background scanning with incremental UI updates and exportable CSV output for triage.
+
+_
+
+## Description:
 
 ## Features
 
