@@ -2384,11 +2384,190 @@ class IoCNinjaWidget(QWidget):
     def goto_address_text(self, addr_str: str):
         if addr_str == "N/A":
             return
+        # Parse hex address
         try:
             addr = int(addr_str, 16)
-            self.bv.navigate(self.bv.view, addr)
-        except ValueError:
+        except Exception:
             log_info(f"Invalid address: {addr_str}")
+            return
+
+        # Best-effort navigation strategies, ordered by likelihood across BN builds.
+        # Return early on first success.
+        try:
+            # 1) UIContext: try navigateForBinaryView on each context (preferred if available)
+            try:
+                from binaryninjaui import UIContext  # type: ignore
+                ctxs = []
+                for meth in ("allContexts", "globalContexts"):
+                    if hasattr(UIContext, meth):
+                        try:
+                            ctxs = list(getattr(UIContext, meth)())
+                            break
+                        except Exception:
+                            ctxs = []
+                if not ctxs:
+                    try:
+                        c = UIContext.activeContext()
+                        if c:
+                            ctxs = [c]
+                    except Exception:
+                        pass
+                for ctx in ctxs:
+                    try:
+                        # Some builds expose navigateForBinaryView on the context
+                        if hasattr(ctx, "navigateForBinaryView"):
+                            try:
+                                res = ctx.navigateForBinaryView(self.bv, addr)
+                                if res:
+                                    return
+                            except Exception:
+                                pass
+                        # Otherwise, iterate frames and try frame.navigate(binaryview, addr)
+                        for fmeth in ("getViewFrames", "viewFrames", "getAllViewFrames"):
+                            if hasattr(ctx, fmeth):
+                                try:
+                                    frames = list(getattr(ctx, fmeth)())
+                                except Exception:
+                                    frames = []
+                                for vf in frames:
+                                    try:
+                                        fn = getattr(vf, "navigate", None)
+                                        if callable(fn):
+                                            try:
+                                                # prefer the BinaryView-aware overload if available
+                                                try:
+                                                    ok = fn(self.bv, addr)
+                                                    if ok:
+                                                        return
+                                                except TypeError:
+                                                    # fallback to single-arg navigate
+                                                    try:
+                                                        ok2 = fn(addr)
+                                                        if ok2:
+                                                            return
+                                                        # Some navigate variants don't return meaningful value; assume success
+                                                        return
+                                                    except Exception:
+                                                        pass
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        continue
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # 2) Try binaryninjaui.getCurrentViewFrame() helper
+            try:
+                from binaryninjaui import getCurrentViewFrame  # type: ignore
+                try:
+                    vf = getCurrentViewFrame()
+                    if vf is not None:
+                        fn = getattr(vf, "navigate", None)
+                        if callable(fn):
+                            try:
+                                # Try both overloads
+                                try:
+                                    if fn(self.bv, addr):
+                                        return
+                                except TypeError:
+                                    try:
+                                        if fn(addr):
+                                            return
+                                    except Exception:
+                                        pass
+                                # If no boolean returned, assume success and return
+                                try:
+                                    fn(addr)
+                                    return
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # 3) Search Qt widget tree for a widget/frame exposing this BinaryView and call its navigate
+            try:
+                from PySide6.QtWidgets import QApplication
+
+                app = QApplication.instance()
+                if app is not None:
+                    for tlw in app.topLevelWidgets():
+                        try:
+                            for obj in tlw.findChildren(object):
+                                try:
+                                    for name in ("binaryView", "getBinaryView", "getCurrentBinaryView"):
+                                        if not hasattr(obj, name):
+                                            continue
+                                        try:
+                                            attr = getattr(obj, name)
+                                            val = attr() if callable(attr) else attr
+                                        except Exception:
+                                            val = None
+                                        if val is not None and (val is self.bv or val == self.bv):
+                                            # Try various navigate call patterns on the object
+                                            for nm in ("navigateForBinaryView", "navigate", "navigateTo", "navigateToAddress", "goToAddress", "showAddress"):
+                                                fn = getattr(obj, nm, None)
+                                                if callable(fn):
+                                                    try:
+                                                        # Try binaryview-aware signature first
+                                                        try:
+                                                            if fn(self.bv, addr):
+                                                                return
+                                                        except TypeError:
+                                                            pass
+                                                        try:
+                                                            if fn(addr):
+                                                                return
+                                                        except TypeError:
+                                                            pass
+                                                        # last resort: call and assume success
+                                                        try:
+                                                            fn(addr)
+                                                            return
+                                                        except Exception:
+                                                            pass
+                                                    except Exception:
+                                                        pass
+                                except Exception:
+                                    continue
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+
+            # 4) Try BinaryView-level navigate helpers (some BN python bindings expose helpers)
+            try:
+                # Common pattern used in examples: bv.navigate(bv.view, addr)
+                try:
+                    nav = getattr(self.bv, "navigate", None)
+                    if callable(nav):
+                        try:
+                            # Try bv.navigate(view, addr) signature used in examples
+                            try:
+                                nav(self.bv.view, addr)
+                                return
+                            except Exception:
+                                # Fallback to single-arg
+                                try:
+                                    nav(addr)
+                                    return
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            log_info(f"Unable to navigate to address: {addr_str}")
+        except Exception as e:
+            log_info(f"Navigation failed for {addr_str}: {e}")
 
     def _parse_addresses(self, text: str):
         """Parse a combined address string into a list of hex strings.
