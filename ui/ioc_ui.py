@@ -874,10 +874,6 @@ class IoCNinjaWidget(QWidget):
         self.results_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.results_table.setFocusPolicy(Qt.NoFocus)
         self.results_table.setSortingEnabled(True)
-        try:
-            self.results_table.itemDoubleClicked.disconnect()
-        except Exception:
-            pass
         self.results_table.setContextMenuPolicy(Qt.NoContextMenu)
         # Click behavior: copy Value on column 1, navigate on Address column 2
         try:
