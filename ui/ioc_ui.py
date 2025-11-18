@@ -36,7 +36,7 @@ from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent, QSettings
 import os
 
 # Adjusted imports for package layout: logic is sibling package under top-level package
-from ..logic import ioc_logic
+from ..core import ioc_logic
 from ..tld_data import VALID_TLDS
 
 import platform
