@@ -14,11 +14,6 @@ IoC Ninja is a Binary Ninja plugin that scans a BinaryView's user-visible string
 - Optional DNS-based live-domain filtering to reduce false positives.
 - Background scanning with incremental UI updates and exportable CSV output for triage.
 
-**Quick links**
-
-- Plugin metadata: `plugin.json`
-- License: `LICENSE`
-
 ## Features
 
 - Pattern-based detection for IPv4/IPv6, domains, URLs, emails, UUIDs, MACs, MD5/SHA hashes, JWTs, API keys, PEM blocks, Base64 blocks, file paths, registry keys and more.

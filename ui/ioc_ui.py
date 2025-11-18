@@ -37,25 +37,29 @@ import os
 
 # Adjusted imports for package layout: logic is sibling package under top-level package
 from ..core import ioc_logic
-from ..tld_data import VALID_TLDS
+from ..core.tld_data import VALID_TLDS
+
 
 import platform
+
 # Register plugin settings with Binary Ninja so options appear in the application's Settings (user scope).
 try:
     from binaryninja.settings import Settings as _BNSettings
     from binaryninja import settings as _bn_settings_mod
     from binaryninja.enums import SettingsScope as _SettingsScope
+
     _bn_settings = _BNSettings()
     # Create a top-level group for IoC Ninja and register the user-scoped boolean setting.
     _bn_settings.register_group("iocninja", "IoC Ninja")
     _bn_settings.register_setting(
         "iocninja.resolvable_domains_only",
-        '{"title":"Resolvable domains only (DNS)", "description":"Resolve domains via DNS after scanning; filter out unresolvable domains.", "type":"boolean", "default": false, "ignore": ["SettingsProjectScope","SettingsResourceScope"]}'
+        '{"title":"Resolvable domains only (DNS)", "description":"Resolve domains via DNS after scanning; filter out unresolvable domains.", "type":"boolean", "default": false, "ignore": ["SettingsProjectScope","SettingsResourceScope"]}',
     )
 except Exception:
     _bn_settings = None
 import socket
 import hashlib
+
 
 class IoCCheckboxProxyStyle(QProxyStyle):
     """Custom checkbox style that draws border with CommentColor and check mark with Text color.
@@ -104,6 +108,7 @@ class IoCCheckboxProxyStyle(QProxyStyle):
                 pass
         # Fallback to default rendering
         return super().drawPrimitive(element, option, painter, widget)
+
 
 class IoCScanWorker(QObject):
     """Background worker to scan strings with progress and cancel."""
@@ -208,7 +213,7 @@ class IoCScanWorker(QObject):
             last_prog_ts = start
             last_prog_count = 0
             PROG_MIN_INTERVAL = 0.03  # seconds between progress signals (~30 FPS)
-            PROG_MIN_STEP = 5         # or every N items, whichever first
+            PROG_MIN_STEP = 5  # or every N items, whichever first
             # When live domain filtering is enabled, defer network checks and suppress domain partials
             pending_domains: dict[tuple, set] = {}
             domains_to_check: set[str] = set()
@@ -271,7 +276,9 @@ class IoCScanWorker(QObject):
                                 addrs = agg.get((ioc_type, value), set())
                                 if not addrs:
                                     # Domain seen but not yet merged (pending); surface a placeholder row
-                                    partial_rows.append((ioc_type, value, "checking..."))
+                                    partial_rows.append(
+                                        (ioc_type, value, "checking...")
+                                    )
                                     continue
                                 # otherwise fall through and render resolved addresses as usual
 
@@ -442,6 +449,7 @@ class IoCScanWorker(QObject):
             return tld in VALID_TLDS
         except Exception:
             return False
+
 
 class IoCNinjaWidget(QWidget):
     def __init__(self, parent: QWidget, name: str, bv: BinaryView):
@@ -961,6 +969,7 @@ class IoCNinjaWidget(QWidget):
             # Try to open Binary Ninja's settings view if the UI binding exposes it.
             try:
                 from binaryninjaui import SettingsView  # type: ignore
+
                 sv = SettingsView()
                 try:
                     # Try to focus search/filter on our plugin group name if API available
@@ -998,7 +1007,9 @@ class IoCNinjaWidget(QWidget):
                 s = _SettingsClass()
                 # get_bool_with_scope returns (value, scope)
                 try:
-                    val, _scope = s.get_bool_with_scope(key, resource=None, scope=_SettingsScope.SettingsUserScope)
+                    val, _scope = s.get_bool_with_scope(
+                        key, resource=None, scope=_SettingsScope.SettingsUserScope
+                    )
                     return bool(val)
                 except Exception:
                     # Some BN builds expose get_bool instead; try module-level helper
@@ -1009,8 +1020,11 @@ class IoCNinjaWidget(QWidget):
             try:
                 from binaryninja import settings as _bn_settings_mod  # type: ignore
                 from binaryninja.enums import SettingsScope as _SettingsScope  # type: ignore
+
                 try:
-                    v = _bn_settings_mod.get_bool_with_scope(key, None, _SettingsScope.SettingsUserScope)
+                    v = _bn_settings_mod.get_bool_with_scope(
+                        key, None, _SettingsScope.SettingsUserScope
+                    )
                     # Some module helpers may return a tuple; normalize
                     if isinstance(v, tuple):
                         return bool(v[0])
@@ -1039,15 +1053,20 @@ class IoCNinjaWidget(QWidget):
             try:
                 from binaryninja import settings as _bn_settings_mod  # type: ignore
                 from binaryninja.enums import SettingsScope as _SettingsScope  # type: ignore
+
                 try:
                     # Module-level helper
-                    _bn_settings_mod.set_setting_value(key, bool(value), _SettingsScope.SettingsUserScope)
+                    _bn_settings_mod.set_setting_value(
+                        key, bool(value), _SettingsScope.SettingsUserScope
+                    )
                     return
                 except Exception:
                     pass
                 try:
                     s = _bn_settings_mod.Settings()
-                    s.set_setting_value(key, bool(value), _SettingsScope.SettingsUserScope)
+                    s.set_setting_value(
+                        key, bool(value), _SettingsScope.SettingsUserScope
+                    )
                     return
                 except Exception:
                     pass
@@ -1727,8 +1746,8 @@ class IoCNinjaWidget(QWidget):
 
     def _text_color(self) -> QColor:
         """Return theme-driven text color.
-       Prefer Binary Ninja theme token 'Text' (or 'TextColor') when available,
-        otherwise fall back to the palette window text, then a safe light gray.
+        Prefer Binary Ninja theme token 'Text' (or 'TextColor') when available,
+         otherwise fall back to the palette window text, then a safe light gray.
         """
         # Try explicit BN theme tokens first without palette fallback
         c = self._theme_color_if_available("Text")
@@ -2397,6 +2416,7 @@ class IoCNinjaWidget(QWidget):
             # 1) UIContext: try navigateForBinaryView on each context (preferred if available)
             try:
                 from binaryninjaui import UIContext  # type: ignore
+
                 ctxs = []
                 for meth in ("allContexts", "globalContexts"):
                     if hasattr(UIContext, meth):
@@ -2423,7 +2443,11 @@ class IoCNinjaWidget(QWidget):
                             except Exception:
                                 pass
                         # Otherwise, iterate frames and try frame.navigate(binaryview, addr)
-                        for fmeth in ("getViewFrames", "viewFrames", "getAllViewFrames"):
+                        for fmeth in (
+                            "getViewFrames",
+                            "viewFrames",
+                            "getAllViewFrames",
+                        ):
                             if hasattr(ctx, fmeth):
                                 try:
                                     frames = list(getattr(ctx, fmeth)())
@@ -2461,6 +2485,7 @@ class IoCNinjaWidget(QWidget):
             # 2) Try binaryninjaui.getCurrentViewFrame() helper
             try:
                 from binaryninjaui import getCurrentViewFrame  # type: ignore
+
                 try:
                     vf = getCurrentViewFrame()
                     if vf is not None:
@@ -2500,7 +2525,11 @@ class IoCNinjaWidget(QWidget):
                         try:
                             for obj in tlw.findChildren(object):
                                 try:
-                                    for name in ("binaryView", "getBinaryView", "getCurrentBinaryView"):
+                                    for name in (
+                                        "binaryView",
+                                        "getBinaryView",
+                                        "getCurrentBinaryView",
+                                    ):
                                         if not hasattr(obj, name):
                                             continue
                                         try:
@@ -2508,9 +2537,18 @@ class IoCNinjaWidget(QWidget):
                                             val = attr() if callable(attr) else attr
                                         except Exception:
                                             val = None
-                                        if val is not None and (val is self.bv or val == self.bv):
+                                        if val is not None and (
+                                            val is self.bv or val == self.bv
+                                        ):
                                             # Try various navigate call patterns on the object
-                                            for nm in ("navigateForBinaryView", "navigate", "navigateTo", "navigateToAddress", "goToAddress", "showAddress"):
+                                            for nm in (
+                                                "navigateForBinaryView",
+                                                "navigate",
+                                                "navigateTo",
+                                                "navigateToAddress",
+                                                "goToAddress",
+                                                "showAddress",
+                                            ):
                                                 fn = getattr(obj, nm, None)
                                                 if callable(fn):
                                                     try:
