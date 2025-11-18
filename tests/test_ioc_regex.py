@@ -18,7 +18,7 @@ bn_log.log_info = _log_info
 sys.modules['binaryninja'] = bn
 sys.modules['binaryninja.log'] = bn_log
 
-import ioc_logic
+from ioc_ninja.logic import ioc_logic
 
 
 def run_tests():

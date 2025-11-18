@@ -35,8 +35,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QObject, QThread, Signal, QEvent, QSettings
 import os
 
-from . import ioc_logic
-from .tld_data import VALID_TLDS
+# Adjusted imports for package layout: logic is sibling package under top-level package
+from ..logic import ioc_logic
+from ..tld_data import VALID_TLDS
 
 import platform
 # Register plugin settings with Binary Ninja so options appear in the application's Settings (user scope).
@@ -55,7 +56,6 @@ except Exception:
     _bn_settings = None
 import socket
 import hashlib
-
 
 class IoCCheckboxProxyStyle(QProxyStyle):
     """Custom checkbox style that draws border with CommentColor and check mark with Text color.
@@ -104,9 +104,6 @@ class IoCCheckboxProxyStyle(QProxyStyle):
                 pass
         # Fallback to default rendering
         return super().drawPrimitive(element, option, painter, widget)
-
-
-
 
 class IoCScanWorker(QObject):
     """Background worker to scan strings with progress and cancel."""
@@ -405,7 +402,6 @@ class IoCScanWorker(QObject):
             return tld in VALID_TLDS
         except Exception:
             return False
-
 
 class IoCNinjaWidget(QWidget):
     def __init__(self, parent: QWidget, name: str, bv: BinaryView):
@@ -1666,12 +1662,12 @@ class IoCNinjaWidget(QWidget):
         for ch in s:
             out.append(ch)
             if ch in breaks:
-                out.append("\u200b")
+                out.append("")
                 run = 0
             else:
                 run += 1
                 if self._wrap_run_length and run >= self._wrap_run_length:
-                    out.append("\u200b")
+                    out.append("")
                     run = 0
         return "".join(out)
 
@@ -1691,7 +1687,7 @@ class IoCNinjaWidget(QWidget):
 
     def _text_color(self) -> QColor:
         """Return theme-driven text color.
-        Prefer Binary Ninja theme token 'Text' (or 'TextColor') when available,
+       Prefer Binary Ninja theme token 'Text' (or 'TextColor') when available,
         otherwise fall back to the palette window text, then a safe light gray.
         """
         # Try explicit BN theme tokens first without palette fallback
@@ -1887,7 +1883,7 @@ class IoCNinjaWidget(QWidget):
                 t_item
                 and v_item
                 and t_item.text() == ioc_type_disp
-                and v_item.text().replace("\u200b", "") == value
+                and v_item.text().replace("", "") == value
             ):
                 target_row = r
                 break
@@ -1990,9 +1986,9 @@ class IoCNinjaWidget(QWidget):
             addr_item = self.results_table.item(r, 2)
             rows.append(
                 [
-                    (type_item.text() if type_item else "").replace("\u200b", ""),
-                    (value_item.text() if value_item else "").replace("\u200b", ""),
-                    (addr_item.text() if addr_item else "").replace("\u200b", ""),
+                    (type_item.text() if type_item else "").replace("", ""),
+                    (value_item.text() if value_item else "").replace("", ""),
+                    (addr_item.text() if addr_item else "").replace("", ""),
                 ]
             )
         return rows
@@ -2306,7 +2302,7 @@ class IoCNinjaWidget(QWidget):
             row = item.row()
             if col == 1:
                 # Copy Value text (strip zero-width spaces) to clipboard
-                txt = item.text().replace("\u200b", "") if item else ""
+                txt = item.text().replace("", "") if item else ""
                 from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().clipboard().setText(txt)

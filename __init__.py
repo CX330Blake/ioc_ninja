@@ -2,7 +2,7 @@ import os
 from binaryninja import PluginCommand
 from binaryninjaui import UIContext
 
-from .ioc_ui import IoCNinjaWidget
+from .ui import IoCNinjaWidget
 
 
 def show_ioc_ninja_dialog(bv):

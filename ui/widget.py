@@ -12,6 +12,6 @@ we iterate on full modularization.
 
 # Import from top-level module so relative imports in the hosting environment
 # (Binary Ninja plugin path) continue to resolve.
-from ioc_ui import IoCNinjaWidget, IoCCheckboxProxyStyle  # noqa: F401
+from ioc_ninja.ui import IoCNinjaWidget, IoCCheckboxProxyStyle  # noqa: F401
 
 __all__ = ["IoCNinjaWidget", "IoCCheckboxProxyStyle"]
