@@ -860,7 +860,7 @@ class IoCNinjaWidget(QWidget):
         right = QWidget()
         right_layout = QVBoxLayout()
         # Match left side: no outer margins so rows start parallel
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setContentsMargins(0, 0, 1, 0)
         right_layout.addLayout(controls)
         right_layout.addWidget(self.results_table)
         right_layout.addLayout(status)
